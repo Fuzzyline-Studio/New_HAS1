@@ -3,12 +3,21 @@
 #include <esp_attr.h>
 #include <stdarg.h>
 
-// Never initialized by startup. POWERON/BROWNOUT contents are deliberately
-// ignored; RTC is evidence across warm resets, not durable crash storage.
+// Never initialized by startup. Recovered after every reset reason: field
+// SDIO and EN-glitch POWERON resets keep RTC memory, while a real power loss
+// leaves no valid header/record checksums. `warm` only reports the reset class.
+// RTC is evidence of the previous boot, not durable crash storage.
 RTC_NOINIT_ATTR static volatile GeneratorDiagnostic::Journal diagnosticRtc;
 static GeneratorDiagnostic::Record diagnosticPrior[GeneratorDiagnostic::Capacity];
 static unsigned diagnosticPriorCount=0, diagnosticPriorInvalid=0;
 static bool diagnosticPriorWarm=false;
+// Events not in the boot-time eight are replayed later from DiagnosticLoop.
+static bool diagnosticPriorLogged[GeneratorDiagnostic::Capacity];
+static unsigned diagnosticPriorNext=0, diagnosticPriorLater=0, diagnosticPriorTimeLost=0;
+static uint32_t diagnosticPriorReplayAt=0;
+static bool diagnosticPriorReplayDone=true;
+static const uint32_t DiagnosticPriorReplayDelayMs=10000, DiagnosticPriorReplayStepMs=500,
+    DiagnosticPriorQuietMs=300;
 static portMUX_TYPE diagnosticMux=portMUX_INITIALIZER_UNLOCKED;
 static uint32_t diagnosticSequence=0, diagnosticId=0;
 static GeneratorDiagnostic::RateGate diagnosticNormal[GeneratorDiagnostic::LastEvent+1];
@@ -126,7 +135,7 @@ void DiagnosticInit() {
       reason==ESP_RST_INT_WDT || reason==ESP_RST_TASK_WDT || reason==ESP_RST_WDT ||
       reason==ESP_RST_DEEPSLEEP;
   diagnosticPriorCount=GeneratorDiagnostic::recover(diagnosticRtc,FIRMWARE_VER,
-      diagnosticPriorWarm,diagnosticPrior,diagnosticPriorInvalid);
+      true,diagnosticPrior,diagnosticPriorInvalid);
   has1blackbox::blackbox.log(has1blackbox::EventType::Crash,diagnosticPriorCount,
       diagnosticPriorInvalid,diagnosticPriorCount>8?diagnosticPriorCount-8:0,
       diagnosticPriorWarm,"prior.rtc.coverage");
@@ -144,13 +153,18 @@ void DiagnosticInit() {
   const unsigned tail=selectedCount?7:8;
   for(unsigned n=diagnosticPriorCount>tail?diagnosticPriorCount-tail:0;n<diagnosticPriorCount;++n)
     selected[selectedCount++]=n;
+  for(unsigned n=0;n<GeneratorDiagnostic::Capacity;++n) diagnosticPriorLogged[n]=false;
   for(unsigned n=0;n<selectedCount;++n) {
     const auto &r=diagnosticPrior[selected[n]];
+    diagnosticPriorLogged[selected[n]]=true;
     has1blackbox::blackbox.log(has1blackbox::EventType::Crash,
         r.sequence,(uint32_t(r.event)<<8)|r.phase,r.code,r.detail,"prior.rtc.event");
     has1blackbox::blackbox.log(has1blackbox::EventType::Crash,
         r.sequence,r.at,r.elapsed,r.id,"prior.rtc.time");
   }
+  diagnosticPriorNext=diagnosticPriorLater=diagnosticPriorTimeLost=0;
+  diagnosticPriorReplayAt=millis()+DiagnosticPriorReplayDelayMs;
+  diagnosticPriorReplayDone=diagnosticPriorCount<=selectedCount;
   GeneratorDiagnostic::initialize(diagnosticRtc,FIRMWARE_VER);
   DiagnosticPoint(GeneratorDiagnostic::Boot,static_cast<int32_t>(reason),ESP.getFreeHeap());
   DiagnosticPrintf("[GD] BOOT fw=%u reset=%d heap=%lu min_heap=%lu prior_records=%u prior_invalid=%u warm=%u\r\n",
@@ -173,11 +187,36 @@ size_t DiagnosticPriorLine(unsigned index,char *buffer,size_t capacity) {
   } else return 0;
   return length>0 ? (static_cast<size_t>(length)<capacity?static_cast<size_t>(length):capacity-1):0;
 }
+// The boot-time eight stay as before (Crash). The rest of the retained window
+// follows one event per step after boot settles, as Progress records so reboot
+// evidence tables keep their Wi-Fi/recovery rows, paused for 300 ms after a
+// DFPlayer call (flash writes stall the audio UART). Same labels as the boot
+// replay; prior_sequence gives the order. A rejected log is retried next step.
+static void DiagnosticPriorReplayStep(uint32_t now) {
+  if (diagnosticPriorReplayDone || int32_t(now-diagnosticPriorReplayAt)<0) return;
+  if (!BlackBoxTraceAudioQuiet(now,DiagnosticPriorQuietMs)) return;
+  diagnosticPriorReplayAt=now+DiagnosticPriorReplayStepMs;
+  while (diagnosticPriorNext<diagnosticPriorCount && diagnosticPriorLogged[diagnosticPriorNext]) ++diagnosticPriorNext;
+  if (diagnosticPriorNext>=diagnosticPriorCount) {
+    if (has1blackbox::blackbox.log(has1blackbox::EventType::Progress,diagnosticPriorLater,
+        diagnosticPriorCount,diagnosticPriorWarm,diagnosticPriorTimeLost,"prior.rtc.more.end"))
+      diagnosticPriorReplayDone=true;
+    return;
+  }
+  const auto &r=diagnosticPrior[diagnosticPriorNext];
+  if (!has1blackbox::blackbox.log(has1blackbox::EventType::Progress,
+      r.sequence,(uint32_t(r.event)<<8)|r.phase,r.code,r.detail,"prior.rtc.event")) return;
+  if (!has1blackbox::blackbox.log(has1blackbox::EventType::Progress,
+      r.sequence,r.at,r.elapsed,r.id,"prior.rtc.time")) ++diagnosticPriorTimeLost;
+  diagnosticPriorLogged[diagnosticPriorNext++]=true;
+  ++diagnosticPriorLater;
+}
 void DiagnosticLoop() {
   static bool seen=false;
   static uint32_t previous=0,healthAt=0,maxGap=0;
   static GeneratorDiagnostic::RateGate gapGate;
   const uint32_t now=millis();
+  DiagnosticPriorReplayStep(now);
   if (seen) {
     const uint32_t gap=uint32_t(now-previous);
     if (gap>maxGap) maxGap=gap;

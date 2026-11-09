@@ -260,6 +260,17 @@ int main() {
    size_t confirmed=writes.size(); run(6000); assert(writes.size()==confirmed && readRequests==0);
  }
  puts("PASS 0..4 absolute counts, one stable update, no repeated confirmed-value requests");
+ {
+  reset(); run(1200);
+  const unsigned raw=blackBoxTestTraces[GeneratorTrace::WireRaw];
+  const unsigned present=blackBoxTestTraces[GeneratorTrace::WirePresent];
+  const unsigned ack=blackBoxTestTraces[GeneratorTrace::WireAck];
+  physical=1; run(3000);
+  assert(blackBoxTestTraces[GeneratorTrace::WireRaw]>raw);
+  assert(blackBoxTestTraces[GeneratorTrace::WirePresent]==present+1);
+  assert(blackBoxTestTraces[GeneratorTrace::WireAck]>ack && wireState.synced());
+  puts("PASS contact, presentation and acknowledgement reach the flash trace outside every lock");
+ }
 
  reset(4,3); run(1200); assert(WireReadyForCompletion());
  writes.clear(); settle(3); assert(WireReadyForCompletion() && serverState.count==3);

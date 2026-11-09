@@ -2,6 +2,7 @@
 #define GENERATOR_DIAGNOSTICS_H
 #include <stdint.h>
 #include <stddef.h>
+#include "generator_trace.h"
 
 // POD only: RTC_NOINIT storage must not receive a C++ startup initializer.
 namespace GeneratorDiagnostic {
@@ -98,6 +99,11 @@ struct RateGate {
   }
 };
 }
+
+// Flash blackbox trace of plug/audio transitions (blackbox.ino, generator_trace.h).
+// Captured in RAM and logged later, away from DFPlayer UART traffic.
+void BlackBoxTrace(uint8_t kind,int32_t a,int32_t b,int32_t c);
+bool BlackBoxTraceAudioQuiet(uint32_t now,uint32_t ms);
 
 void TelnetDiagnosticWrite(const char *text, size_t length);
 void DiagnosticInit();
