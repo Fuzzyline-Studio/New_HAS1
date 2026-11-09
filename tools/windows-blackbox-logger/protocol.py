@@ -162,10 +162,4 @@ VALUE_SCHEMAS = {
     'adc.min.age.n.batt_age': (('window_min_adc_pin_mv', 'mV'), ('last_adc_sample_age_ms', 'ms'), ('sample_count', 'count'), ('last_valid_battery_age_ms', 'ms')),
     'output.applied': (('motor', 'boolean'), ('lit_pixels', 'count'), ('brightness_8bit', '0..255'), ('suppressed_output_changes', 'count')),
     'prior.rtc.coverage': (('prior_count', 'count'), ('invalid_count', 'count'), ('not_replayed_count', 'count'), ('warm', 'boolean')),
-    'prior.rtc.more.end': (('later_replayed_count', 'count'), ('prior_count', 'count'), ('warm', 'boolean'), ('reserved', 'raw')),
-    'wire.raw': (('raw_prev_stable1_samples', 'bits'), ('connected_votes', 'bits'), ('enabled_qualified_reset', 'bits'), ('suppressed', 'count')),
-    'wire.present': (('stable', 'count'), ('previous', 'raw'), ('raw_votes_mode', 'bits'), ('suppressed', 'count')),
-    'wire.ack': (('count', 'count'), ('generation', 'uint32'), ('accepted', 'boolean'), ('suppressed', 'count')),
-    'audio.begin': (('folder_track', 'raw'), ('blocking', 'boolean'), ('reserved', 'raw'), ('suppressed', 'count')),
-    'audio.end': (('folder_track', 'raw'), ('blocking_finished_bits', 'bits'), ('elapsed_ms', 'ms'), ('suppressed', 'count')),
 }
