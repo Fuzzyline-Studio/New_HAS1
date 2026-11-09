@@ -59,6 +59,7 @@ void Mp3PlayLargeFolderAndWait(uint8_t folder_number, uint16_t file_number) {
     DiagnosticScope trace(GeneratorDiagnostic::AudioWait,(uint32_t(folder_number)<<16)|file_number);
     const int32_t track=int32_t((uint32_t(folder_number)<<16)|file_number);
     BlackBoxTrace(GeneratorTrace::AudioBegin,track,1,0); // 1 = blocking play until finish/timeout
+    const unsigned long sendStarted=millis(); // audio.end elapsed counts from the send, as above
     BREADCRUMB("Mp3PlayLargeFolderAndWait");
     myDFPlayer.playLargeFolder(folder_number, file_number);
     unsigned long start = millis();
@@ -67,7 +68,7 @@ void Mp3PlayLargeFolderAndWait(uint8_t folder_number, uint16_t file_number) {
         if (myDFPlayer.available() && myDFPlayer.readType() == DFPlayerPlayFinished) { finished=true; break; }
     }
     trace.result(finished?1:-1,(uint32_t(folder_number)<<16)|file_number);
-    BlackBoxTrace(GeneratorTrace::AudioEnd,track,finished?3:1,int32_t(millis()-start));
+    BlackBoxTrace(GeneratorTrace::AudioEnd,track,finished?3:1,int32_t(millis()-sendStarted));
     BREADCRUMB("Mp3PlayLargeFolderAndWait:done");
 }
 

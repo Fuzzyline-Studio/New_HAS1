@@ -42,6 +42,8 @@ jobs:
         run: python devices/HAS1_generator/tests/run_tagger_tests.py
       - name: Bounded diagnostic logger and RTC journal with sanitizers
         run: python devices/HAS1_generator/tests/run_diagnostic_tests.py
+      - name: Plug/audio trace buffer kept away from DFPlayer traffic
+        run: python devices/HAS1_generator/tests/run_trace_tests.py
       - name: Telnet history and nonblocking sender with sanitizers
         run: python devices/HAS1_generator/tests/run_telnet_tests.py
       - name: Telnet collector lifecycle and stall recovery with sanitizers

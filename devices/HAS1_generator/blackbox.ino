@@ -16,6 +16,24 @@ static void BlackBoxUploadGate() {
       !strcmp(phase,"activate"),!strcmp(phase,"photo"),WiFi.status()==WL_CONNECTED,
       blackBoxNetworkBusy,blackBoxMaintenance));
 }
+// Plug/audio transitions (generator_trace.h). Callers only store to RAM; the
+// flash log happens here, at the top of the main loop and at least 100 ms
+// after the last DFPlayer call, so it never overlaps the audio UART exchange.
+static GeneratorTrace::Buffer blackBoxTrace;
+void BlackBoxTrace(uint8_t kind,int32_t a,int32_t b,int32_t c) {
+  blackBoxTrace.add(kind,millis(),a,b,c);
+}
+bool BlackBoxTraceAudioQuiet(uint32_t now,uint32_t ms) { return blackBoxTrace.audioQuiet(now,ms); }
+static void BlackBoxTraceFlush() {
+  static const char *const labels[]={"wire.raw","wire.present","wire.ack","audio.begin","audio.end"};
+  static_assert(sizeof(labels)/sizeof(labels[0])==GeneratorTrace::Count,"one label per trace kind");
+  GeneratorTrace::Entry entry;
+  uint32_t age,extra;
+  if(!blackBoxTrace.next(millis(),entry,age,extra)) return;
+  // Fourth value: event age in ms (bits 0-15, saturated) | extra << 16.
+  has1blackbox::blackbox.log(has1blackbox::EventType::State,entry.a,entry.b,entry.c,
+      int32_t((age>0xffffUL?0xffffUL:age) | ((extra>0x7fffUL?0x7fffUL:extra)<<16)),labels[entry.kind]);
+}
 void BlackBoxBegin() {
   static char version[16];snprintf(version,sizeof(version),"%d",FIRMWARE_VER);
   has1blackbox::blackbox.begin({"HAS1_generator",version,HAS1_GENERATOR_BLACKBOX_BROKER_URI,
@@ -28,6 +46,7 @@ void BlackBoxBegin() {
   });
 }
 void BlackBoxLoop() {
+  BlackBoxTraceFlush();
   const uint32_t now=millis();BlackBoxUploadGate();
   if(!blackBoxSummary.sample(now)) return;
   has1blackbox::blackbox.log(has1blackbox::EventType::Progress,blackBoxSummary.maxGap,
@@ -151,26 +170,4 @@ void BlackBoxOfflineRecovery(int stage,uint32_t outageMs,uint32_t attempts,uint3
   // 5 retained prior restart. detail: delay at start, blocker bits if deferred.
   has1blackbox::blackbox.log(has1blackbox::EventType::Recovery,
       stage,outageMs,attempts,detail,"wifi.offline.recovery");
-}
-
-void BlackBoxTrace(uint8_t kind,int32_t a,int32_t b,int32_t c) {
-  // Plug/audio transitions only, never idle heartbeats, so a reset can be
-  // ordered against contact, count presentation and audio even after RTC loss.
-  // Main-task callers; the critical section only guards the gate bookkeeping.
-  static const char *const labels[GeneratorTrace::Count]={
-      "wire.raw","wire.present","wire.ack","audio.begin","audio.end"};
-  // Raw contact can chatter every 100 ms sample; audio calls are already
-  // bounded by game logic, so their gate only stops a pathological loop.
-  static const uint32_t intervals[GeneratorTrace::Count]={250,100,100,20,20};
-  static GeneratorDiagnostic::RateGate gates[GeneratorTrace::Count];
-  static portMUX_TYPE mux=portMUX_INITIALIZER_UNLOCKED;
-  if(kind>=GeneratorTrace::Count) return;
-  portENTER_CRITICAL(&mux);
-  const bool allow=gates[kind].allow(millis(),intervals[kind]);
-  const uint32_t skipped=allow?gates[kind].skipped:0;
-  if(allow) gates[kind].skipped=0;
-  portEXIT_CRITICAL(&mux);
-  if(!allow) return;
-  has1blackbox::blackbox.log(has1blackbox::EventType::State,a,b,c,
-      int32_t(skipped>0x7fffffffUL?0x7fffffffUL:skipped),labels[kind]);
 }

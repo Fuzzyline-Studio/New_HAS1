@@ -13,10 +13,11 @@ static unsigned diagnosticPriorCount=0, diagnosticPriorInvalid=0;
 static bool diagnosticPriorWarm=false;
 // Events not in the boot-time eight are replayed later from DiagnosticLoop.
 static bool diagnosticPriorLogged[GeneratorDiagnostic::Capacity];
-static unsigned diagnosticPriorNext=0, diagnosticPriorLater=0;
+static unsigned diagnosticPriorNext=0, diagnosticPriorLater=0, diagnosticPriorTimeLost=0;
 static uint32_t diagnosticPriorReplayAt=0;
 static bool diagnosticPriorReplayDone=true;
-static const uint32_t DiagnosticPriorReplayDelayMs=10000, DiagnosticPriorReplayStepMs=200;
+static const uint32_t DiagnosticPriorReplayDelayMs=10000, DiagnosticPriorReplayStepMs=500,
+    DiagnosticPriorQuietMs=300;
 static portMUX_TYPE diagnosticMux=portMUX_INITIALIZER_UNLOCKED;
 static uint32_t diagnosticSequence=0, diagnosticId=0;
 static GeneratorDiagnostic::RateGate diagnosticNormal[GeneratorDiagnostic::LastEvent+1];
@@ -161,7 +162,7 @@ void DiagnosticInit() {
     has1blackbox::blackbox.log(has1blackbox::EventType::Crash,
         r.sequence,r.at,r.elapsed,r.id,"prior.rtc.time");
   }
-  diagnosticPriorNext=diagnosticPriorLater=0;
+  diagnosticPriorNext=diagnosticPriorLater=diagnosticPriorTimeLost=0;
   diagnosticPriorReplayAt=millis()+DiagnosticPriorReplayDelayMs;
   diagnosticPriorReplayDone=diagnosticPriorCount<=selectedCount;
   GeneratorDiagnostic::initialize(diagnosticRtc,FIRMWARE_VER);
@@ -186,26 +187,29 @@ size_t DiagnosticPriorLine(unsigned index,char *buffer,size_t capacity) {
   } else return 0;
   return length>0 ? (static_cast<size_t>(length)<capacity?static_cast<size_t>(length):capacity-1):0;
 }
-// The boot-time eight stay as before. The rest of the retained window follows
-// one event per step after boot settles, so the 32-slot logger queue cannot
-// flood. Same labels as the boot replay; prior_sequence gives the order.
+// The boot-time eight stay as before (Crash). The rest of the retained window
+// follows one event per step after boot settles, as Progress records so reboot
+// evidence tables keep their Wi-Fi/recovery rows, and never within 300 ms of a
+// DFPlayer call (flash writes stall the audio UART). Same labels as the boot
+// replay; prior_sequence gives the order. A rejected log is retried next step.
 static void DiagnosticPriorReplayStep(uint32_t now) {
   if (diagnosticPriorReplayDone || int32_t(now-diagnosticPriorReplayAt)<0) return;
+  if (!BlackBoxTraceAudioQuiet(now,DiagnosticPriorQuietMs)) return;
+  diagnosticPriorReplayAt=now+DiagnosticPriorReplayStepMs;
   while (diagnosticPriorNext<diagnosticPriorCount && diagnosticPriorLogged[diagnosticPriorNext]) ++diagnosticPriorNext;
   if (diagnosticPriorNext>=diagnosticPriorCount) {
-    has1blackbox::blackbox.log(has1blackbox::EventType::Crash,diagnosticPriorLater,
-        diagnosticPriorCount,diagnosticPriorWarm,0,"prior.rtc.more.end");
-    diagnosticPriorReplayDone=true;
+    if (has1blackbox::blackbox.log(has1blackbox::EventType::Progress,diagnosticPriorLater,
+        diagnosticPriorCount,diagnosticPriorWarm,diagnosticPriorTimeLost,"prior.rtc.more.end"))
+      diagnosticPriorReplayDone=true;
     return;
   }
   const auto &r=diagnosticPrior[diagnosticPriorNext];
-  has1blackbox::blackbox.log(has1blackbox::EventType::Crash,
-      r.sequence,(uint32_t(r.event)<<8)|r.phase,r.code,r.detail,"prior.rtc.event");
-  has1blackbox::blackbox.log(has1blackbox::EventType::Crash,
-      r.sequence,r.at,r.elapsed,r.id,"prior.rtc.time");
+  if (!has1blackbox::blackbox.log(has1blackbox::EventType::Progress,
+      r.sequence,(uint32_t(r.event)<<8)|r.phase,r.code,r.detail,"prior.rtc.event")) return;
+  if (!has1blackbox::blackbox.log(has1blackbox::EventType::Progress,
+      r.sequence,r.at,r.elapsed,r.id,"prior.rtc.time")) ++diagnosticPriorTimeLost;
   diagnosticPriorLogged[diagnosticPriorNext++]=true;
   ++diagnosticPriorLater;
-  diagnosticPriorReplayAt=now+DiagnosticPriorReplayStepMs;
 }
 void DiagnosticLoop() {
   static bool seen=false;

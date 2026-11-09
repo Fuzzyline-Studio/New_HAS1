@@ -147,7 +147,7 @@ void WireSampleInputs(bool) {
         (uint32_t(snapshot.connectedVotes(3))<<16));
     const int previous = wireLastPresented;
     wireLastPresented = snapshot.stable();
-    // Flash copy of the same presentation, written before LED/audio can run.
+    // RAM-captured copy of the same presentation; logged to flash later, away from audio.
     BlackBoxTrace(GeneratorTrace::WirePresent,snapshot.stable(),previous,
         int32_t(uint32_t(snapshot.rawMask()) | (uint32_t(snapshot.connectedVotes(0))<<4) |
         (uint32_t(snapshot.connectedVotes(1))<<8) | (uint32_t(snapshot.connectedVotes(2))<<12) |
@@ -224,7 +224,8 @@ static void WireDiagnosticSnapshot(const GeneratorWireState &s) {
         previousAck!=ack || previousGeneration!=s.generation() || previousQualified!=qualified;
     if (changed) ++changes;
     // First physical contact/release as seen by the 100 ms sampler, before the
-    // 8/10 vote presents it. Separate flash trace; the RTC/text gates below stay.
+    // 8/10 vote presents it. RAM-captured and coalesced (generator_trace.h);
+    // the RTC/text gates below stay unchanged.
     if (!first && previousRaw!=s.rawMask())
         BlackBoxTrace(GeneratorTrace::WireRaw,
             int32_t(uint32_t(s.rawMask()) | (uint32_t(previousRaw)<<4) |

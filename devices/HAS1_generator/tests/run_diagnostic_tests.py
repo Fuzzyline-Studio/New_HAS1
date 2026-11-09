@@ -23,13 +23,18 @@ using portMUX_TYPE=int;
 #define portEXIT_CRITICAL(x) do { (void)x; assert(--criticalDepth==0); } while(0)
 void BlackBoxDiagnostic(uint16_t,uint8_t,uint32_t,int32_t,uint32_t,uint32_t) { assert(criticalDepth==0); }
 namespace has1blackbox {
- enum class EventType {Crash};
- struct Captured {int32_t a,b,c,d;std::string text;};
+ enum class EventType {Crash,Progress};
+ struct Captured {int32_t a,b,c,d;std::string text;EventType type;};
  static std::vector<Captured> captured;
- struct Logger {void log(EventType,int32_t a,int32_t b,int32_t c,int32_t d,const char* text) {
-  assert(criticalDepth==0);captured.push_back({a,b,c,d,text});
+ static unsigned rejectNext=0; // simulate a full logger queue
+ struct Logger {uint32_t log(EventType type,int32_t a,int32_t b,int32_t c,int32_t d,const char* text) {
+  assert(criticalDepth==0);
+  if(rejectNext){--rejectNext;return 0;}
+  captured.push_back({a,b,c,d,text,type});return uint32_t(captured.size());
  }} blackbox;
 }
+static bool audioQuiet=true;
+bool BlackBoxTraceAudioQuiet(uint32_t,uint32_t ms) { assert(ms>=100); return audioQuiet; }
 static uint32_t clockMs=0;
 unsigned long millis() { return clockMs; }
 enum esp_reset_reason_t { ESP_RST_UNKNOWN,ESP_RST_POWERON,ESP_RST_EXT,ESP_RST_SW,
@@ -93,19 +98,39 @@ static void runtimeTests() {
   const uint32_t booted=clockMs;
   clockMs=booted+9999; for(unsigned i=0;i<5;++i) DiagnosticLoop();
   assert(count("prior.rtc.event")==8 && count("prior.rtc.time")==8);
-  clockMs=booted+10000; for(unsigned i=0;i<5;++i) DiagnosticLoop();
+  audioQuiet=false; clockMs=booted+10000; for(unsigned i=0;i<5;++i) DiagnosticLoop();
+  assert(count("prior.rtc.event")==8); // paused near DFPlayer traffic
+  audioQuiet=true; has1blackbox::rejectNext=1; DiagnosticLoop();
+  assert(count("prior.rtc.event")==8); // queue full: retried, not marked logged
+  clockMs=booted+10499; DiagnosticLoop(); assert(count("prior.rtc.event")==8);
+  clockMs=booted+10500; for(unsigned i=0;i<5;++i) DiagnosticLoop();
   assert(count("prior.rtc.event")==9 && count("prior.rtc.time")==9);
-  for(unsigned step=1;step<=40;++step){clockMs=booted+10000+step*200;DiagnosticLoop();DiagnosticLoop();}
+  for(unsigned step=1;step<=40;++step){clockMs=booted+10500+step*500;DiagnosticLoop();DiagnosticLoop();}
   std::vector<int32_t> all;
-  bool ended=false;
+  bool ended=false, types=true;
   for(const auto &r:has1blackbox::captured) {
    if(r.text=="prior.rtc.event")all.push_back(r.a);
-   if(r.text=="prior.rtc.more.end")ended=r.a==24 && r.b==32 && r.c==1;
+   if(r.text=="prior.rtc.more.end")ended=r.a==24 && r.b==32 && r.c==1 && r.d==0;
+   if(r.text.rfind("prior.rtc.",0)==0 && r.text!="prior.rtc.coverage") {
+    const bool boot=std::find(selected.begin(),selected.end(),r.a)!=selected.end() && r.text!="prior.rtc.more.end";
+    types=types && r.type==(boot?has1blackbox::EventType::Crash:has1blackbox::EventType::Progress);
+   }
   }
   std::sort(all.begin(),all.end());
-  assert(all.size()==32 && ended && count("prior.rtc.time")==32 && count("prior.rtc.more.end")==1);
+  assert(all.size()==32 && ended && types && count("prior.rtc.time")==32 && count("prior.rtc.more.end")==1);
   for(unsigned i=0;i<32;++i) assert(all[i]==int32_t(i+1));
-  puts("PASS remaining 24 events replayed once each, one per 200 ms after a 10 s boot delay");
+  puts("PASS remaining 24 replayed once each as Progress, 500 ms apart, paused near audio, retried when rejected");
+ }
+ {
+  // Eight or fewer events: everything goes at boot and no later records follow.
+  initialize(diagnosticRtc,26);
+  for(unsigned i=1;i<=5;++i) append(diagnosticRtc,record(i));
+  resetReason=ESP_RST_SW; has1blackbox::captured.clear(); const uint32_t booted=clockMs; DiagnosticInit();
+  for(unsigned step=0;step<60;++step){clockMs=booted+step*500;DiagnosticLoop();}
+  size_t events=0,ends=0;
+  for(const auto &r:has1blackbox::captured){events+=r.text=="prior.rtc.event";ends+=r.text=="prior.rtc.more.end";}
+  assert(events==5 && ends==0);
+  puts("PASS small journals replay entirely at boot without a later summary");
  }
  resetReason=ESP_RST_POWERON; DiagnosticInit(); output.clear();
  DiagnosticHttpHook("Loop","request.begin",0,0,0);

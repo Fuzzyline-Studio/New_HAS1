@@ -68,26 +68,38 @@ EN-glitch POWERON resets keep RTC memory and are exactly the resets to explain.
 A real power loss leaves arbitrary RTC contents, which the header and record
 checksums reject; incompatible firmware still discards old contents. `warm` in
 `prior.rtc.coverage` and Telnet only reports the reset class (0 = SDIO,
-power-on, brownout, unknown). If a boot dies before `DiagnosticInit()`, the next
+power-on, brownout, EXT, unknown). Its third value now counts events deferred
+to the later replay below, not events that are never sent. If a boot dies before `DiagnosticInit()`, the next
 boot can see the same older journal again; compare `prior_sequence`/times.
 RTC survival is best effort, not persistent storage or a brownout detector.
 
 Blackbox replay: the earliest fault plus newest seven events are logged at boot
-as before. The remaining events follow from the main loop 10 s after boot, one
-event (`prior.rtc.event` + `prior.rtc.time`) per 200 ms, then
-`prior.rtc.more.end` (later count, total, warm), so the 32-entry logger queue is
-never flooded.
+as before (Crash). The remaining events follow from the main loop 10 s after
+boot as `EventType::Progress` (so reboot evidence tables keep their Wi-Fi and
+recovery rows), one event (`prior.rtc.event` + `prior.rtc.time`) per 500 ms,
+paused within 300 ms of a DFPlayer call and retried when the 32-entry logger
+queue rejects it. `prior.rtc.more.end` closes it (later count, total, warm,
+lost time records).
 
-Plug/audio flash trace (`EventType::State`, fourth value = records suppressed by
-that label's gate): `wire.raw` when the 100 ms sampler's raw mask changes
-(raw | previous<<4 | (stable+1)<<8 | samples<<12; votes; bit0 enabled, bit1
-qualified, bit2 reset-induced), `wire.present` before LED/audio (stable,
-previous, raw/votes plus bit24 WirePollMain, bit25 battery audio played),
-`wire.ack`, and `audio.begin`/`audio.end` around every DFPlayer play
-(`audio.end` third value is elapsed ms; bit1 of the second = finish received).
-Raw changes are gated to one per 250 ms, presentation/ack 100 ms, audio 20 ms.
-Idle heartbeats stay RTC/Telnet-only. Upload policy is unchanged (no upload
-during activate/photo).
+Plug/audio flash trace (`EventType::State`): callers only store to a fixed RAM
+buffer (`generator_trace.h`); `BlackBoxLoop()` logs at most one record per loop
+and **never within 100 ms of a DFPlayer call**. The blackbox writer's flash
+access stalls the other core, which would corrupt the bit-banged 9600-baud
+DFPlayer frame or its ACK; nothing is logged next to that exchange. Fourth value:
+event age in ms (bits 0-15, saturated) | extra << 16, where extra is the number
+of raw changes a `wire.raw` record stands for, or queued records dropped (16
+slots) since the previous one. Event time = record uptime - age.
+- `wire.raw`: the 100 ms sampler's raw mask changed (raw | previous<<4 |
+  (stable+1)<<8 | samples<<12; votes; bit0 enabled, bit1 qualified, bit2
+  reset-induced). Coalesced to the latest state, at most one per 250 ms and 30
+  per minute; the final state is always logged.
+- `wire.present`: count presentation (stable, previous, raw/votes plus bit24
+  WirePollMain, bit25 battery audio played). `wire.ack`: server acknowledgement.
+- `audio.begin`/`audio.end` around every DFPlayer play; `audio.end` third value
+  is ms since the send started (ACK wait for a plain send, until finish/timeout
+  for a blocking play; bit1 of the second value = finish received).
+RAM entries are lost on reset; the reset moment itself is in the RTC journal
+above. Idle heartbeats stay RTC/Telnet-only. Upload policy is unchanged.
 
 At boot, validated records are copied to an independent RAM snapshot before the
 new journal starts. Every Telnet connection receives that same previous-boot
