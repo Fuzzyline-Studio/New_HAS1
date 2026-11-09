@@ -77,15 +77,19 @@ Blackbox replay: the earliest fault plus newest seven events are logged at boot
 as before (Crash). The remaining events follow from the main loop 10 s after
 boot as `EventType::Progress` (so reboot evidence tables keep their Wi-Fi and
 recovery rows), one event (`prior.rtc.event` + `prior.rtc.time`) per 500 ms,
-paused within 300 ms of a DFPlayer call and retried when the 32-entry logger
+paused for 300 ms after a DFPlayer call and retried when the 32-entry logger
 queue rejects it. `prior.rtc.more.end` closes it (later count, total, warm,
 lost time records).
 
 Plug/audio flash trace (`EventType::State`): callers only store to a fixed RAM
-buffer (`generator_trace.h`); `BlackBoxLoop()` logs at most one record per loop
-and **never within 100 ms of a DFPlayer call**. The blackbox writer's flash
-access stalls the other core, which would corrupt the bit-banged 9600-baud
-DFPlayer frame or its ACK; nothing is logged next to that exchange. Fourth value:
+buffer (`generator_trace.h`); `BlackBoxLoop()` logs one record at a time, 20 ms
+apart, only **at least 100 ms after the last DFPlayer call and 500 ms after the
+last count presentation/ack** (the events that start the next sound), and only
+while the logger queue holds fewer than 8 records. A rejected record is offered
+again. The blackbox writer's flash access stalls the other core, which would
+corrupt the bit-banged 9600-baud DFPlayer frame or its ACK. This keeps the trace
+out of the exchanges it records; a sound that starts later can still meet an
+ordinary blackbox write, exactly as before this trace existed. Fourth value:
 event age in ms (bits 0-15, saturated) | extra << 16, where extra is the number
 of raw changes a `wire.raw` record stands for, or queued records dropped (16
 slots) since the previous one. Event time = record uptime - age.
@@ -98,8 +102,11 @@ slots) since the previous one. Event time = record uptime - age.
 - `audio.begin`/`audio.end` around every DFPlayer play; `audio.end` third value
   is ms since the send started (ACK wait for a plain send, until finish/timeout
   for a blocking play; bit1 of the second value = finish received).
-RAM entries are lost on reset; the reset moment itself is in the RTC journal
-above. Idle heartbeats stay RTC/Telnet-only. Upload policy is unchanged.
+RAM entries are lost on reset. That includes the first ~0.5 s after a plug or
+sound, which is exactly the suspected failure moment: for a reset there, use the
+RTC journal above (presentation, audio BEGIN/END, contact snapshots), which
+survives every reset except a real power loss. Idle heartbeats stay
+RTC/Telnet-only. Upload policy is unchanged.
 
 At boot, validated records are copied to an independent RAM snapshot before the
 new journal starts. Every Telnet connection receives that same previous-boot

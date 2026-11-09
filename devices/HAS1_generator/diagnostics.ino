@@ -189,7 +189,7 @@ size_t DiagnosticPriorLine(unsigned index,char *buffer,size_t capacity) {
 }
 // The boot-time eight stay as before (Crash). The rest of the retained window
 // follows one event per step after boot settles, as Progress records so reboot
-// evidence tables keep their Wi-Fi/recovery rows, and never within 300 ms of a
+// evidence tables keep their Wi-Fi/recovery rows, paused for 300 ms after a
 // DFPlayer call (flash writes stall the audio UART). Same labels as the boot
 // replay; prior_sequence gives the order. A rejected log is retried next step.
 static void DiagnosticPriorReplayStep(uint32_t now) {

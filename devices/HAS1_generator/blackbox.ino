@@ -17,8 +17,9 @@ static void BlackBoxUploadGate() {
       blackBoxNetworkBusy,blackBoxMaintenance));
 }
 // Plug/audio transitions (generator_trace.h). Callers only store to RAM; the
-// flash log happens here, at the top of the main loop and at least 100 ms
-// after the last DFPlayer call, so it never overlaps the audio UART exchange.
+// flash log happens here, at the top of the main loop, at least 100 ms after
+// the last DFPlayer call and 500 ms after the last count presentation/ack, so
+// it stays out of the audio UART exchange those events start.
 static GeneratorTrace::Buffer blackBoxTrace;
 void BlackBoxTrace(uint8_t kind,int32_t a,int32_t b,int32_t c) {
   blackBoxTrace.add(kind,millis(),a,b,c);
@@ -29,10 +30,14 @@ static void BlackBoxTraceFlush() {
   static_assert(sizeof(labels)/sizeof(labels[0])==GeneratorTrace::Count,"one label per trace kind");
   GeneratorTrace::Entry entry;
   uint32_t age,extra;
-  if(!blackBoxTrace.next(millis(),entry,age,extra)) return;
-  // Fourth value: event age in ms (bits 0-15, saturated) | extra << 16.
-  has1blackbox::blackbox.log(has1blackbox::EventType::State,entry.a,entry.b,entry.c,
-      int32_t((age>0xffffUL?0xffffUL:age) | ((extra>0x7fffUL?0x7fffUL:extra)<<16)),labels[entry.kind]);
+  const uint32_t now=millis();
+  if(!blackBoxTrace.peek(now,entry,age,extra)) return;
+  // Leave the logger queue to the device's own bursts; a busy queue only
+  // delays the trace. A rejected record is offered again, never lost here.
+  if(has1blackbox::blackbox.diagnostics().queueDepth>=8) { blackBoxTrace.defer(now); return; }
+  if(has1blackbox::blackbox.log(has1blackbox::EventType::State,entry.a,entry.b,entry.c,
+      int32_t(GeneratorTrace::packAgeExtra(age,extra)),labels[entry.kind])) blackBoxTrace.commit(now);
+  else blackBoxTrace.defer(now);
 }
 void BlackBoxBegin() {
   static char version[16];snprintf(version,sizeof(version),"%d",FIRMWARE_VER);
