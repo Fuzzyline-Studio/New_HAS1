@@ -6,7 +6,9 @@ import subprocess
 import tempfile
 ROOT=Path(__file__).resolve().parents[1]
 PREAMBLE=r'''
+#include <algorithm>
 #include <cassert>
+#include <cstddef>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -31,7 +33,7 @@ namespace has1blackbox {
 static uint32_t clockMs=0;
 unsigned long millis() { return clockMs; }
 enum esp_reset_reason_t { ESP_RST_UNKNOWN,ESP_RST_POWERON,ESP_RST_EXT,ESP_RST_SW,
- ESP_RST_PANIC,ESP_RST_INT_WDT,ESP_RST_TASK_WDT,ESP_RST_WDT,ESP_RST_DEEPSLEEP,ESP_RST_BROWNOUT };
+ ESP_RST_PANIC,ESP_RST_INT_WDT,ESP_RST_TASK_WDT,ESP_RST_WDT,ESP_RST_DEEPSLEEP,ESP_RST_BROWNOUT,ESP_RST_SDIO };
 static esp_reset_reason_t resetReason=ESP_RST_POWERON;
 esp_reset_reason_t esp_reset_reason() { return resetReason; }
 struct FakeEsp { uint32_t getFreeHeap(){return 100000;} uint32_t getMinFreeHeap(){return 90000;}
@@ -85,6 +87,26 @@ static void runtimeTests() {
  }
  assert(coverage && selected.size()==8 && selected.front()==3 && selected[1]==26 && selected.back()==32);
  puts("PASS earliest retained RTC fault plus newest seven; omission count explicit");
+ {
+  // The other 24 follow one per step after the boot delay, never as a burst.
+  auto count=[](const char *text){size_t n=0;for(const auto &r:has1blackbox::captured)if(r.text==text)++n;return n;};
+  const uint32_t booted=clockMs;
+  clockMs=booted+9999; for(unsigned i=0;i<5;++i) DiagnosticLoop();
+  assert(count("prior.rtc.event")==8 && count("prior.rtc.time")==8);
+  clockMs=booted+10000; for(unsigned i=0;i<5;++i) DiagnosticLoop();
+  assert(count("prior.rtc.event")==9 && count("prior.rtc.time")==9);
+  for(unsigned step=1;step<=40;++step){clockMs=booted+10000+step*200;DiagnosticLoop();DiagnosticLoop();}
+  std::vector<int32_t> all;
+  bool ended=false;
+  for(const auto &r:has1blackbox::captured) {
+   if(r.text=="prior.rtc.event")all.push_back(r.a);
+   if(r.text=="prior.rtc.more.end")ended=r.a==24 && r.b==32 && r.c==1;
+  }
+  std::sort(all.begin(),all.end());
+  assert(all.size()==32 && ended && count("prior.rtc.time")==32 && count("prior.rtc.more.end")==1);
+  for(unsigned i=0;i<32;++i) assert(all[i]==int32_t(i+1));
+  puts("PASS remaining 24 events replayed once each, one per 200 ms after a 10 s boot delay");
+ }
  resetReason=ESP_RST_POWERON; DiagnosticInit(); output.clear();
  DiagnosticHttpHook("Loop","request.begin",0,0,0);
  DiagnosticHttpHook("Loop","get.end",200,700,0);
@@ -103,9 +125,34 @@ static void runtimeTests() {
  for(unsigned n=0;;++n){size_t len=DiagnosticPriorLine(n,line,sizeof(line));if(!len)break;again.append(line,len);}
  assert(previous==again);
  puts("PASS reset during close retains stage/kind; previous snapshot survives current journal overwrite and reconnect");
- resetReason=ESP_RST_BROWNOUT; DiagnosticInit(); assert(diagnosticPriorCount==0);
- resetReason=ESP_RST_POWERON; DiagnosticInit(); assert(diagnosticPriorCount==0);
- puts("PASS brownout/power-on always discard untrustworthy RTC data");
+ // SDIO and EN-glitch POWERON keep RTC memory: recover it, report the cold class.
+ for (esp_reset_reason_t cold : {ESP_RST_SDIO,ESP_RST_POWERON,ESP_RST_BROWNOUT}) {
+  for(unsigned n=0;n<4;++n) DiagnosticPoint(Wire,n,n);
+  resetReason=cold; has1blackbox::captured.clear(); DiagnosticInit();
+  bool coldCoverage=false;
+  for(const auto &r:has1blackbox::captured)
+   if(r.text=="prior.rtc.coverage")coldCoverage=r.a>0 && r.d==0;
+  assert(diagnosticPriorCount>0 && !diagnosticPriorWarm && coldCoverage);
+ }
+ puts("PASS SDIO/power-on/brownout with intact RTC journal are recovered and marked cold");
+ // A real power loss leaves arbitrary RTC contents: no header, no records.
+ for (unsigned pattern : {0x00u,0xffu,0xa5u,0x5au}) {
+  std::memset(const_cast<GeneratorDiagnostic::Journal*>(&diagnosticRtc),int(pattern),sizeof(diagnosticRtc));
+  resetReason=ESP_RST_POWERON; DiagnosticInit(); assert(diagnosticPriorCount==0);
+ }
+ {
+  uint32_t lcg=12345;
+  unsigned char *bytes=reinterpret_cast<unsigned char*>(const_cast<GeneratorDiagnostic::Journal*>(&diagnosticRtc));
+  for(unsigned trial=0;trial<200;++trial) {
+   for(size_t i=0;i<sizeof(diagnosticRtc);++i){lcg=lcg*1103515245u+12345u;bytes[i]=uint8_t(lcg>>16);}
+   resetReason=ESP_RST_POWERON; DiagnosticInit(); assert(diagnosticPriorCount==0);
+  }
+  // A valid header with garbage records still yields no records.
+  initialize(diagnosticRtc,26);
+  for(size_t i=offsetof(GeneratorDiagnostic::Journal,records);i<sizeof(diagnosticRtc);++i){lcg=lcg*1103515245u+12345u;bytes[i]=uint8_t(lcg>>16);}
+  resetReason=ESP_RST_SDIO; DiagnosticInit(); assert(diagnosticPriorCount==0);
+ }
+ puts("PASS power-loss garbage (fixed patterns, 200 random images, garbage records) recovers nothing");
  output.clear(); diagnosticNormal[Neo]=RateGate(); diagnosticErrors[Neo]=RateGate();
  clockMs=1000;
  for(unsigned i=0;i<1000;++i){DiagnosticScope scope(Neo,2);scope.result(-1,2);}

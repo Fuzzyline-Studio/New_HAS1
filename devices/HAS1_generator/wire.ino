@@ -44,6 +44,7 @@ static bool WireAcknowledge(int count, uint32_t generation) {
     const bool accepted = wireState.acknowledge(count, generation);
     portEXIT_CRITICAL(&wireStateMux);
     DiagnosticPoint(GeneratorDiagnostic::Wire,accepted?1:-1,generation);
+    BlackBoxTrace(GeneratorTrace::WireAck,count,int32_t(generation),accepted);
     DiagnosticPrintf("[GD] t=%lu wire_ack accepted=%u count=%d generation=%lu\r\n",
         (unsigned long)millis(),accepted,count,(unsigned long)generation);
     return accepted;
@@ -146,6 +147,12 @@ void WireSampleInputs(bool) {
         (uint32_t(snapshot.connectedVotes(3))<<16));
     const int previous = wireLastPresented;
     wireLastPresented = snapshot.stable();
+    // Flash copy of the same presentation, written before LED/audio can run.
+    BlackBoxTrace(GeneratorTrace::WirePresent,snapshot.stable(),previous,
+        int32_t(uint32_t(snapshot.rawMask()) | (uint32_t(snapshot.connectedVotes(0))<<4) |
+        (uint32_t(snapshot.connectedVotes(1))<<8) | (uint32_t(snapshot.connectedVotes(2))<<12) |
+        (uint32_t(snapshot.connectedVotes(3))<<16) | (ptrCurrentMode == WirePollMain ? (1u<<24) : 0u) |
+        (batteryFinishAudioPlayed ? (1u<<25) : 0u)));
     Serial.printf("[Wire] stable=%d previous=%d maximum=%d\n", snapshot.stable(), previous, (int)my["max_battery_pack"]);
     if (ptrCurrentMode == WirePollMain) {
         BatteryPackSend();
@@ -216,6 +223,15 @@ static void WireDiagnosticSnapshot(const GeneratorWireState &s) {
     const bool changed=first || previousRaw!=s.rawMask() || previousStable!=s.stable() ||
         previousAck!=ack || previousGeneration!=s.generation() || previousQualified!=qualified;
     if (changed) ++changes;
+    // First physical contact/release as seen by the 100 ms sampler, before the
+    // 8/10 vote presents it. Separate flash trace; the RTC/text gates below stay.
+    if (!first && previousRaw!=s.rawMask())
+        BlackBoxTrace(GeneratorTrace::WireRaw,
+            int32_t(uint32_t(s.rawMask()) | (uint32_t(previousRaw)<<4) |
+                (uint32_t(s.stable()+1)<<8) | (uint32_t(s.sampleCount())<<12)),
+            int32_t(uint32_t(s.connectedVotes(0)) | (uint32_t(s.connectedVotes(1))<<4) |
+                (uint32_t(s.connectedVotes(2))<<8) | (uint32_t(s.connectedVotes(3))<<12)),
+            (wireEnabled?1:0) | (qualified?2:0) | (previousGeneration!=s.generation()?4:0));
     previousRaw=s.rawMask(); previousStable=s.stable(); previousAck=ack;
     previousGeneration=s.generation(); previousQualified=qualified;
     if (!first && uint32_t(now-last)<500) return; // At most 2 detailed wire records/sec.

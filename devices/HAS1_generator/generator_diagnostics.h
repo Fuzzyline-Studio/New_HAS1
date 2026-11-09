@@ -99,6 +99,13 @@ struct RateGate {
 };
 }
 
+// Flash blackbox trace of plug/audio transitions (blackbox.ino). Each kind has
+// its own rate gate; the fourth logged value is the count suppressed by it.
+namespace GeneratorTrace {
+enum Kind : uint8_t { WireRaw = 0, WirePresent, WireAck, AudioBegin, AudioEnd, Count };
+}
+void BlackBoxTrace(uint8_t kind,int32_t a,int32_t b,int32_t c);
+
 void TelnetDiagnosticWrite(const char *text, size_t length);
 void DiagnosticInit();
 void DiagnosticLoop();

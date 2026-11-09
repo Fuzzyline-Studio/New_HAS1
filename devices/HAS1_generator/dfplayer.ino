@@ -38,9 +38,13 @@ void Mp3_Init() {
 void Mp3PlayLargeFolder(uint8_t folder_number, uint16_t file_number) {
     if (!dfPlayerReady) return;
     DiagnosticScope trace(GeneratorDiagnostic::AudioSend,(uint32_t(folder_number)<<16)|file_number);
+    const int32_t track=int32_t((uint32_t(folder_number)<<16)|file_number);
+    BlackBoxTrace(GeneratorTrace::AudioBegin,track,0,0); // 0 = send without waiting for finish
+    const unsigned long sendStarted=millis();
     BREADCRUMB("Mp3PlayLargeFolder:send");
     myDFPlayer.playLargeFolder(folder_number, file_number);
     BREADCRUMB("Mp3PlayLargeFolder:sent");
+    BlackBoxTrace(GeneratorTrace::AudioEnd,track,0,int32_t(millis()-sendStarted));
 }
 
 // 트랙 재생이 끝날 때까지(최대 MP3_WAIT_TIMEOUT_MS) 대기한 뒤 리턴한다.
@@ -53,6 +57,8 @@ void Mp3PlayLargeFolder(uint8_t folder_number, uint16_t file_number) {
 void Mp3PlayLargeFolderAndWait(uint8_t folder_number, uint16_t file_number) {
     if (!dfPlayerReady) return;
     DiagnosticScope trace(GeneratorDiagnostic::AudioWait,(uint32_t(folder_number)<<16)|file_number);
+    const int32_t track=int32_t((uint32_t(folder_number)<<16)|file_number);
+    BlackBoxTrace(GeneratorTrace::AudioBegin,track,1,0); // 1 = blocking play until finish/timeout
     BREADCRUMB("Mp3PlayLargeFolderAndWait");
     myDFPlayer.playLargeFolder(folder_number, file_number);
     unsigned long start = millis();
@@ -61,6 +67,7 @@ void Mp3PlayLargeFolderAndWait(uint8_t folder_number, uint16_t file_number) {
         if (myDFPlayer.available() && myDFPlayer.readType() == DFPlayerPlayFinished) { finished=true; break; }
     }
     trace.result(finished?1:-1,(uint32_t(folder_number)<<16)|file_number);
+    BlackBoxTrace(GeneratorTrace::AudioEnd,track,finished?3:1,int32_t(millis()-start));
     BREADCRUMB("Mp3PlayLargeFolderAndWait:done");
 }
 

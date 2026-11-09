@@ -254,6 +254,15 @@ static void applicationTests() {
   unsigned before=elapsed; tickMillis=true; Mp3PlayLargeFolderAndWait(1,6); tickMillis=false;
   check(elapsed-before>=2000, "blocking play ignores old queued finish and reaches bounded timeout");
   std::puts("PASS actual blocking play app: old queued finish cannot skip wait");
+  resetApplication();
+  const unsigned begins=blackBoxTestTraces[GeneratorTrace::AudioBegin];
+  const unsigned ends=blackBoxTestTraces[GeneratorTrace::AudioEnd];
+  tickMillis=true; Mp3PlayLargeFolder(1,7); Mp3PlayLargeFolderAndWait(1,4); tickMillis=false;
+  check(blackBoxTestTraces[GeneratorTrace::AudioBegin]==begins+2 &&
+        blackBoxTestTraces[GeneratorTrace::AudioEnd]==ends+2, "send and blocking play each trace begin and end");
+  dfPlayerReady=false; Mp3PlayLargeFolder(1,7); Mp3PlayLargeFolderAndWait(1,4);
+  check(blackBoxTestTraces[GeneratorTrace::AudioBegin]==begins+2, "no audio trace when DFPlayer is absent");
+  std::puts("PASS audio begin/end reach the flash trace; absent DFPlayer adds nothing");
 }
 
 '''

@@ -63,9 +63,31 @@ A 1,040-byte `RTC_NOINIT_ATTR` journal retains the newest **32 compact events**,
 not 32 requests or a guaranteed duration. Every risky BEGIN is committed before
 the call, even when no Telnet client exists. Entries have checksums and a final
 commit write; a torn/corrupt entry is omitted. Header magic/schema/firmware must
-match. Only recognized software/panic/watchdog/deep-sleep resets are accepted;
-power-on, brownout, unknown and incompatible firmware discard old RTC contents.
+match. The journal is recovered after **every** reset reason: field SDIO and
+EN-glitch POWERON resets keep RTC memory and are exactly the resets to explain.
+A real power loss leaves arbitrary RTC contents, which the header and record
+checksums reject; incompatible firmware still discards old contents. `warm` in
+`prior.rtc.coverage` and Telnet only reports the reset class (0 = SDIO,
+power-on, brownout, unknown). If a boot dies before `DiagnosticInit()`, the next
+boot can see the same older journal again; compare `prior_sequence`/times.
 RTC survival is best effort, not persistent storage or a brownout detector.
+
+Blackbox replay: the earliest fault plus newest seven events are logged at boot
+as before. The remaining events follow from the main loop 10 s after boot, one
+event (`prior.rtc.event` + `prior.rtc.time`) per 200 ms, then
+`prior.rtc.more.end` (later count, total, warm), so the 32-entry logger queue is
+never flooded.
+
+Plug/audio flash trace (`EventType::State`, fourth value = records suppressed by
+that label's gate): `wire.raw` when the 100 ms sampler's raw mask changes
+(raw | previous<<4 | (stable+1)<<8 | samples<<12; votes; bit0 enabled, bit1
+qualified, bit2 reset-induced), `wire.present` before LED/audio (stable,
+previous, raw/votes plus bit24 WirePollMain, bit25 battery audio played),
+`wire.ack`, and `audio.begin`/`audio.end` around every DFPlayer play
+(`audio.end` third value is elapsed ms; bit1 of the second = finish received).
+Raw changes are gated to one per 250 ms, presentation/ack 100 ms, audio 20 ms.
+Idle heartbeats stay RTC/Telnet-only. Upload policy is unchanged (no upload
+during activate/photo).
 
 At boot, validated records are copied to an independent RAM snapshot before the
 new journal starts. Every Telnet connection receives that same previous-boot
