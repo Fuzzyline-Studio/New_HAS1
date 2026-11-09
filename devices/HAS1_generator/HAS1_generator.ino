@@ -19,7 +19,7 @@
 // FIRMWARE_VER / PARTITION_VER: OTA가 "새 버전이 있는지" 판단하는 기준값.
 // GitHub Releases에 올라간 version.txt / partition_version.txt와 비교되며,
 // 배포할 때마다 이 숫자를 올려야 기기가 업데이트를 인식한다.
-#define FIRMWARE_VER 41
+#define FIRMWARE_VER 42
 #define PARTITION_VER 1
 #include "HAS1_generator.h"
 
