@@ -41,7 +41,7 @@ except ModuleNotFoundError:
 class MqttIntegrationTests(unittest.TestCase):
     def test_persist_ack_duplicate_and_broker_restart(self):
         import paho.mqtt.client as mqtt
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory(dir=os.environ.get("MOSQUITTO_TEST_TMPDIR")) as directory:
             base = Path(directory)
             with socket.socket() as sock:
                 sock.bind(("127.0.0.1", 0))

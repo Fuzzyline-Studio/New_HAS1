@@ -60,8 +60,11 @@ This is source/PR validation, not a firmware release or store installation.
   Scan buffers are retained until the driver's completion event establishes safe
   ownership. A scan that exceeds six seconds is cancelled; if its completion
   event is still missing four seconds later, a driver fault is latched. Main
-  records the fault and the worker stops feeding its own watchdog. Thus a wedged
-  driver can still cause a reset, separately from ordinary connection failures.
+  records the fault and, unless the retained own-restart count is non-zero or a
+  restart safety gate blocks, restarts at once through the offline-recovery path
+  (`wifi.offline.recovery` stage 3, detail 4). Otherwise the worker, which stops
+  feeding its own watchdog, causes the reset. Thus a wedged driver still resets
+  the device, separately from ordinary connection failures.
 - OTA is an explicit maintenance path. It is not included in the promise of
   uninterrupted normal gameplay. Worker and main state ownership still applies.
   Cancelled queued work can drain offline; maintenance aborts after ten seconds

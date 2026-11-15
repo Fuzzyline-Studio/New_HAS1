@@ -28,7 +28,12 @@ jobs:
       - run: python -m pip install -r tools/windows-blackbox-logger/requirements.txt
       - name: Install real MQTT broker for integration tests
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y mosquitto
+        run: |
+          sudo apt-get update && sudo apt-get install -y mosquitto
+          # Ubuntu's Mosquitto AppArmor profile permits conf.d/**, not /tmp/**.
+          # Keep the real broker confined and its test fixtures private to the runner.
+          sudo install -d -m 700 -o "$(id -u)" -g "$(id -g)" /etc/mosquitto/conf.d/blackbox-tests
+          echo "MOSQUITTO_TEST_TMPDIR=/etc/mosquitto/conf.d/blackbox-tests" >> "$GITHUB_ENV"
       - name: Unit, crash recovery, and MQTT tests
         run: python -m unittest discover -s tools/windows-blackbox-logger/tests -v
   windows-service:

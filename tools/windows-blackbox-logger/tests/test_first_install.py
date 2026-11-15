@@ -97,7 +97,7 @@ class FirstInstallTests(unittest.TestCase):
 class ProvisionedBrokerTests(unittest.TestCase):
     def test_generated_credentials_authentication_and_topic_isolation(self):
         import paho.mqtt.client as mqtt
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory(dir=os.environ.get("MOSQUITTO_TEST_TMPDIR")) as directory:
             base = Path(directory) / "Program Data with spaces"
             base.mkdir()
             with socket.socket() as reservation:

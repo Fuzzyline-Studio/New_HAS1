@@ -67,7 +67,8 @@ void BlackBoxPollResult(bool) {assert(depth==0);}
 void BlackBoxBeforeRestart() {assert(depth==0);}
 static std::vector<uint32_t> otaRestartLogs;
 void BlackBoxOtaRestart(uint32_t attempts) {assert(depth==0);otaRestartLogs.push_back(attempts);}
-void BlackBoxOfflineRecovery(int,uint32_t,uint32_t,uint32_t) {assert(depth==0);}
+static uint32_t restartDetail=99;
+void BlackBoxOfflineRecovery(int stage,uint32_t,uint32_t,uint32_t detail) {assert(depth==0);if(stage==3){restartDetail=detail;}}
 uint32_t millis(){return now;}
 using TaskHandle_t=void*;using BaseType_t=int;using esp_err_t=int;using portMUX_TYPE=int;
 #define portMUX_INITIALIZER_UNLOCKED 0
@@ -960,13 +961,29 @@ int main(){
 
  reset();online=false;assert(!NetworkOfflineRecoveryService());now+=180000;
  networkMaintenance=true;assert(!NetworkOfflineRecoveryService()&&restarts==0&&!networkRecoveryFence);
- networkMaintenance=false;networkDriverFault=true;assert(!NetworkOfflineRecoveryService()&&restarts==0);
+ networkMaintenance=false;networkDriverFault=true;networkRecoveryHistory.attempts=1;GeneratorOfflineRecovery::seal(networkRecoveryHistory);
+ now+=120000;assert(networkRecoveryPolicy.due(now,networkRecoveryHistory,networkRecoverySalt));
+ assert(!NetworkOfflineRecoveryService()&&restarts==0&&!networkRecoveryFence);
+ networkRecoveryHistory=GeneratorOfflineRecovery::Retained{};GeneratorOfflineRecovery::seal(networkRecoveryHistory);
  networkDriverFault=false;networkSlots[0].occupied=true;networkSlots[0].active=true;
  assert(!NetworkOfflineRecoveryService()&&restarts==0&&!networkRecoveryFence);
  networkSlots[0].occupied=false;networkMailboxReady=true;
  assert(!NetworkOfflineRecoveryService()&&restarts==0);
- networkMailboxReady=false;assert(NetworkOfflineRecoveryService()&&restarts==1);
+ networkMailboxReady=false;assert(NetworkOfflineRecoveryService()&&restarts==1&&restartDetail==0);
  pass("OTA, failed worker, active request and unread mailbox defer recovery without taking the dispatch fence");
+
+ // Scan driver fault: the worker never returns, so main restarts without
+ // waiting for the outage delay; the usual safety gates still apply.
+ reset();mainTurn();online=false;mainTurn();networkDriverFault=true;
+ networkMaintenance=true;mainTurn();assert(restarts==0);
+ networkMaintenance=false;networkMailboxReady=true;assert(!NetworkOfflineRecoveryService()&&restarts==0);
+ networkMailboxReady=false;now+=1000;mainTurn();
+ assert(restarts==1&&networkRecoveryFence&&networkRecoveryHistory.pending==1&&networkRecoveryHistory.attempts==1&&restartDetail==4);
+ reset();GeneratorOfflineRecovery::requested(networkRecoveryHistory,1000);
+ assert(GeneratorOfflineRecovery::boot(networkRecoveryHistory,true));mainTurn();
+ online=false;mainTurn();networkDriverFault=true;now+=29000;mainTurn();assert(restarts==0);
+ now+=400000;assert(networkRecoveryPolicy.due(now,networkRecoveryHistory,networkRecoverySalt));mainTurn();assert(restarts==0&&!networkRecoveryFence);
+ pass("scan driver fault restarts immediately through the gated path once; a repeat after an own restart is left to the worker watchdog");
 
  reset();completionSetup();assert(!GeneratorNetworkComplete("battery_max"));
  failAt(Has2BoundedTransport::Phase::Header);workerTurn();mainTurn();

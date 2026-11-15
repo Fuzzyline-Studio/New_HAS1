@@ -49,6 +49,9 @@ int main(){
  h=Retained{};seal(h);p=Policy{};p.sample(UINT32_MAX-20000,true,h);p.sample(UINT32_MAX-10000,false,h);
  assert(!p.due(19998,h,0)&&p.due(19999,h,0));
  puts("PASS outage timer handles millis rollover and clears promptly on association");
+ h=Retained{};seal(h);assert(faultRestartDue(h));requested(h,10000);assert(boot(h,true)&&!faultRestartDue(h));
+ assert(!boot(h,false)&&faultRestartDue(h));
+ puts("PASS scan driver fault restarts at once only when no own recovery restart preceded it");
  h.attempts=65535;seal(h);requested(h,7);assert(valid(h)&&h.attempts==65535);
  puts("PASS retained counter saturates without overflow");
 }

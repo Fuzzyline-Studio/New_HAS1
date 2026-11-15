@@ -13,7 +13,6 @@
 #include <Adafruit_PN532.h>     // RFID/NFC 리더(PN532) 제어 라이브러리
 #include <Adafruit_NeoPixel.h>  // WS2812 계열 네오픽셀(LED 스트립) 제어 라이브러리
 
-#include <SoftwareSerial.h>       // DFPlayer와 통신하기 위한 소프트웨어 UART
 #include "DFRobotDFPlayerMini.h"  // MP3 음원 재생 모듈(DFPlayer Mini) 제어 라이브러리
 #include <HAS2_Wifi.h>            // 서버와 통신(상태 송수신)하는 사내 공용 WiFi 라이브러리
 #include "generator_ble.h"
@@ -25,7 +24,7 @@
 
 // ---------------------------------------------------------------------------------
 // DFPlayer Mini (MP3 재생 모듈) 통신 핀
-// SoftwareSerial 기준이므로 RX/TX는 DFPlayer 쪽 TX/RX와 교차 연결됨
+// ESP32 기준(하드웨어 UART2에 배정)이므로 RX/TX는 DFPlayer 쪽 TX/RX와 교차 연결됨
 // ---------------------------------------------------------------------------------
 #define DFPLAYER_RX_PIN 39
 #define DFPLAYER_TX_PIN 33

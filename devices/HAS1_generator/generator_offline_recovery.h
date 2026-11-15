@@ -33,6 +33,10 @@ inline void requested(Retained &s,uint32_t elapsed) {
   if(s.attempts<65535) ++s.attempts;
   s.outageMs=elapsed;s.pending=1;seal(s);
 }
+// A latched scan driver fault leaves the worker stopped for good, so waiting out
+// the outage delay gains nothing: restart at once. A fault straight after an own
+// recovery restart keeps the worker-watchdog fail-stop as the slower path.
+inline bool faultRestartDue(const Retained &history) {return history.attempts==0;}
 struct Policy {
   bool offline=false,stable=false,hasServer=false,hadConnection=false;
   uint32_t offlineSince=0,stableSince=0,serverAt=0;
