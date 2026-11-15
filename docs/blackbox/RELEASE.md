@@ -5,14 +5,18 @@ version increment, fixed release tag and partitions. Select `iotglove` (normal
 TTGO glove) or `HAS1_generator`. Training gloves remain a separate USB build;
 Beetle and other devices do not gain a blackbox uploader from this workflow.
 
-`blackbox_mode` is an explicit choice:
+`blackbox_mode` selects the target's release behavior:
 
-- `flash` (default): flash journal only, empty MQTT URI/password. No logs reach
-  Windows automatically. Existing non-blackbox targets are unchanged.
+- `auto` (default): resolves to `mqtt` for `iotglove` and `HAS1_generator`;
+  existing non-blackbox targets are unchanged.
 - `mqtt`: flash journal plus the bounded background MQTT uploader. Requires the
   repository Actions **variable** `BLACKBOX_BROKER_URI` and Actions **secret**
   `BLACKBOX_MQTT_PASSWORD`. Missing/invalid settings fail before version increment
   or publishing. MQTT on unsupported devices fails rather than silently ignoring it.
+- `flash`: flash journal only, empty MQTT URI/password. No logs reach Windows
+  automatically. This mode is local-build-only for `iotglove` and
+  `HAS1_generator`: their official releases require MQTT and reject `flash`.
+  Existing non-blackbox targets are unchanged.
 
 For store 1 the intended address is `mqtt://172.30.1.43:1883`; confirm that its
 broker, collector, firewall and device accounts are ready before choosing MQTT.
