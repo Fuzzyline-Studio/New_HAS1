@@ -1,4 +1,5 @@
 """Generator silence and crash-reboot rule: decisions, incident flow and cards."""
+from dataclasses import replace
 from datetime import timedelta
 import json
 from pathlib import Path
@@ -199,9 +200,12 @@ class WatchTests(unittest.TestCase):
                        "fields": {"text": "device.boot", "values": [4, 39, 1, 0]}})
         events.append({"source": "device", "event_type": "Boot", "mac": GENERATORS["SG"], "observed_utc": stamp(26),
                        "fields": {"text": "device.boot", "values": [3, 39, 1, 0]}})
+        for detail in (0, 4):  # only detail 4 marks a restart after a scan that never completed
+            events.append({"source": "device", "event_type": "Recovery", "mac": GENERATORS["LG"], "observed_utc": stamp(27),
+                           "fields": {"text": "wifi.offline.recovery", "values": [3, 10000, 1, detail]}})
         decisions = replay(events, GeneratorWatch(GENERATORS))
-        self.assertEqual([(item["type"], item.get("names") or item.get("name")) for item in decisions],
-                         [("open", ["TG"]), ("reboot", "SG")])
+        self.assertEqual([(item["type"], item.get("names") or item.get("name"), item.get("reason")) for item in decisions],
+                         [("open", ["TG"], None), ("reboot", "SG", "panic"), ("reboot", "LG", "scan_fault")])
 
     def test_config(self):
         self.assertEqual(validate_generators({"enabled": False}),
@@ -237,6 +241,13 @@ def boot(name, reason, second, *, device_boot=7, mac=None):
                  observed_utc=stamp(second), mac=mac or GENERATORS[name], device_id="HAS1_generator", event_type="Boot",
                  fields={"ring": "ring", "seq": device_boot, "boot": device_boot, "uptime_ms": 65,
                          "values": [reason, 39, 1, 0], "text": "device.boot"})
+
+
+def scan_fault(name, second, *, device_boot=7, stage=3, detail=4):
+    return Event(site_id="store-1", source="device", source_id=GENERATORS[name], event_id=f"ring:recovery:{device_boot}:{stage}",
+                 observed_utc=stamp(second), mac=GENERATORS[name], device_id="HAS1_generator", event_type="Recovery",
+                 fields={"ring": "ring", "seq": 100 + device_boot, "boot": device_boot, "uptime_ms": 15000,
+                         "values": [stage, 10000, 1, detail], "text": "wifi.offline.recovery"})
 
 
 class IncidentFlowTests(unittest.TestCase):
@@ -532,6 +543,43 @@ class IncidentFlowTests(unittest.TestCase):
         self.assertEqual(self.incidents(), [("AG", "recovered", "generator_reboot")])
         # Filed with the day's out-of-game events, not on the card of a game it is not part of.
         self.assertEqual(self.store.db.execute("SELECT session_id FROM incident_state").fetchone()[0], "게임외-20261025")
+
+    def test_scan_fault_restart_is_announced_from_its_recovery_record(self):
+        self.process(snapshot(0, 1, active=False), 0)
+        self.process(scan_fault("SG", 10, stage=3, detail=0), 10)   # ordinary offline recovery restart
+        self.process(scan_fault("SG", 10, stage=2, detail=4), 10)   # deferred with the worker-fault blocker
+        self.process(boot("SG", 3, 11, device_boot=8), 11)          # the restart's own SW Boot record
+        self.assertEqual(self.incidents(), [])
+        self.process(scan_fault("SG", 12), 12)
+        self.assertEqual(self.incidents(), [("SG", "recovered", "generator_reboot")])
+        payload = self.claim()["payload"]
+        self.assertEqual((payload["status"], payload["reset_label"]), ("rebooted", "scan_fault"))
+        self.assertIn("Wi-Fi 스캔 정지 복구", json.dumps(slack_message(payload), ensure_ascii=False))
+
+    def test_scan_fault_rtc_replay_keeps_original_boot_identity_after_quiet_window(self):
+        self.process(snapshot(0, 1, active=False), 0)
+        original = scan_fault("SG", 10, device_boot=7)
+        self.process(original, 10)
+        # Deduplication survives a collector restart, not just its in-memory watch.
+        self.store.close()
+        self.store = self.open_store()
+
+        # RTC replay retains the original boot and uptime, but receives a new ring
+        # sequence. Arrive after 600 seconds so the quiet window cannot hide a bug.
+        replayed = replace(original, event_id="ring:recovery:207", observed_utc=stamp(611),
+                           fields={**original.fields, "seq": 207})
+        self.process(replayed, 611)
+        restarted = boot("SG", 3, 612, device_boot=8)
+        self.process(replace(restarted, fields={**restarted.fields, "seq": 208}), 612)
+        self.assertEqual(self.incidents(), [("SG", "recovered", "generator_reboot")])
+
+        # A different scan fault in the new boot is still news after the window;
+        # deduplication must not permanently suppress this device's later faults.
+        next_fault = scan_fault("SG", 613, device_boot=8)
+        self.process(replace(next_fault, fields={**next_fault.fields, "seq": 209}), 613)
+        rows = self.store.db.execute("SELECT details FROM incident_state ORDER BY opened_utc").fetchall()
+        self.assertEqual([(json.loads(row[0])["device_boot"], json.loads(row[0])["reset_label"])
+                          for row in rows], [(7, "scan_fault"), (8, "scan_fault")])
 
     def test_reboots_that_are_not_announced(self):
         self.process(snapshot(0, 1, active=False), 0)

@@ -298,7 +298,8 @@ CLOSE_REASONS = {"reconnected": "장치 재연결", "snapshot_no_longer_active":
 # generator_watch reboot labels (esp_reset_reason_t).
 REBOOT_LABELS = {"panic": "패닉(크래시)", "int_wdt": "인터럽트 워치독", "task_wdt": "태스크 워치독", "wdt": "워치독",
                  "brownout": "전압 저하", "pwr_glitch": "전원 글리치", "cpu_lockup": "CPU 잠김",
-                 "poweron": "전원 투입", "ext": "외부 리셋", "sw": "소프트웨어"}
+                 "poweron": "전원 투입", "ext": "외부 리셋", "sw": "소프트웨어",
+                 "scan_fault": "Wi-Fi 스캔 정지 복구"}
 
 
 def _parse_time(value):

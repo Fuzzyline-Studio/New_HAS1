@@ -181,7 +181,8 @@ static void NetworkWorker(void *) {
       portENTER_CRITICAL(&networkMux);networkDriverFault=true;portEXIT_CRITICAL(&networkMux);
       // An ESP-IDF scan never completed even after cancellation grace. Do not
       // free/replace its buffer or pretend this is an ordinary offline retry.
-      // This worker alone stops feeding its registered watchdog.
+      // Main restarts at once when its safety gates allow; otherwise this
+      // worker, which alone stops feeding its registered watchdog, resets.
       for(;;){ vTaskDelay(pdMS_TO_TICKS(100)); }
     }
     const uint32_t stackFree=uxTaskGetStackHighWaterMark(nullptr);
@@ -993,6 +994,11 @@ void GeneratorNetworkBegin() {
 // Called only from main, after mailbox callbacks have settled transaction state.
 // The dispatch fence and worker selection share networkMux. No task deletion,
 // driver buffer disposal, Wi-Fi mode toggle or transport replay is introduced.
+static void NetworkDriverFaultLog() {
+  static bool logged=false;
+  if(logged){return;}
+  logged=true;DiagnosticPoint(GeneratorDiagnostic::Has2Http,-202,0);DiagnosticPrintf("[NET] WiFi scan completion lost; worker stopped\r\n");
+}
 static bool NetworkOfflineRecoveryService() {
   const uint32_t now=millis();
   const bool online=WiFi.status()==WL_CONNECTED;
@@ -1006,7 +1012,11 @@ static bool NetworkOfflineRecoveryService() {
     BlackBoxOfflineRecovery(1,0,networkRecoveryHistory.attempts,
       GeneratorOfflineRecovery::delayMs(networkRecoveryHistory.attempts,networkRecoverySalt,networkRecoveryPolicy.hadConnection));
   }
-  if(!networkRecoveryPolicy.due(now,networkRecoveryHistory,networkRecoverySalt)){return false;}
+  portENTER_CRITICAL(&networkMux);
+  const bool fault=networkDriverFault&&GeneratorOfflineRecovery::faultRestartDue(networkRecoveryHistory);
+  portEXIT_CRITICAL(&networkMux);
+  if(fault){NetworkDriverFaultLog();} // May have latched after this loop's snapshot.
+  if(!fault&&!networkRecoveryPolicy.due(now,networkRecoveryHistory,networkRecoverySalt)){return false;}
   uint32_t blocked=0;
   if(networkMaintenance){blocked|=1;}
   // Only a verified durable conditional intent may survive an uncertain
@@ -1016,7 +1026,7 @@ static bool NetworkOfflineRecoveryService() {
       !networkCompletionSuperseded&&!networkCompletionDurable&&
       (networkCompletionMode!=NetworkCompletionMode::Legacy||networkCompletionGeneration==GeneratorNetworkGeneration())){blocked|=2;}
   portENTER_CRITICAL(&networkMux);
-  if(!networkTask||networkDriverFault){blocked|=4;}
+  if(!networkTask||(networkDriverFault&&!fault)){blocked|=4;}
   if(networkMailboxReady){blocked|=8;}
   for(const auto &slot:networkSlots)if(slot.occupied&&slot.active){blocked|=8;}
   if(!blocked){networkRecoveryFence=true;}
@@ -1037,9 +1047,9 @@ static bool NetworkOfflineRecoveryService() {
   }
   GeneratorOfflineRecovery::requested(networkRecoveryHistory,networkRecoveryPolicy.elapsed(now));
   has1blackbox::blackbox.setUploadAllowed(false);
-  BlackBoxOfflineRecovery(3,networkRecoveryHistory.outageMs,networkRecoveryHistory.attempts,0);
-  DiagnosticPrintf("[NET] wifi-offline recovery restart: attempt=%lu outage_ms=%lu\r\n",
-    (unsigned long)networkRecoveryHistory.attempts,(unsigned long)networkRecoveryHistory.outageMs);
+  BlackBoxOfflineRecovery(3,networkRecoveryHistory.outageMs,networkRecoveryHistory.attempts,fault?4:0);
+  DiagnosticPrintf("[NET] wifi-offline recovery restart: attempt=%lu outage_ms=%lu scan_fault=%u\r\n",
+    (unsigned long)networkRecoveryHistory.attempts,(unsigned long)networkRecoveryHistory.outageMs,unsigned(fault));
   // RTC intent is written before restart. BlackBox delivery is best effort;
   // next boot re-emits the retained intent. No blocking flush on this path.
   ESP.restart();return true;
@@ -1065,8 +1075,7 @@ void GeneratorNetworkLoop() {
     seenDisconnect=disconnect.sequence;
   }
   static Has2BoundedTransport::Phase seenPhase=Has2BoundedTransport::Phase::Done;
-  static bool faultLogged=false;
-  if(driverFault&&!faultLogged){faultLogged=true;DiagnosticPoint(GeneratorDiagnostic::Has2Http,-202,0);DiagnosticPrintf("[NET] WiFi scan completion lost; worker watchdog fail-stop\r\n");}
+  if(driverFault){NetworkDriverFaultLog();}
   if(activeId&&!ready&&(activeId!=seenActive||phase!=seenPhase||uint32_t(millis()-lastActiveLog)>=5000)) {
     seenActive=activeId;seenPhase=phase;lastActiveLog=millis();
     DiagnosticPoint(GeneratorDiagnostic::Has2Http,-201,(activeId<<8)|uint32_t(phase));

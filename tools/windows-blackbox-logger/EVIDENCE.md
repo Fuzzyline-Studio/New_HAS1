@@ -162,7 +162,7 @@ python import_omada_csv.py actual.csv --database data/telemetry.sqlite3 --site-i
 |---|---|---|
 | 1 | outage_start: Wi-Fi 연결 끊김 감지 | 다음 재시작 임계시간 ms |
 | 2 | deferred: 안전 조건 때문에 복구 보류 | blocker bitmask |
-| 3 | restart_requested: 자체 재시작 요청 | 0 |
+| 3 | restart_requested: 자체 재시작 요청 | 0, scan driver fault로 인한 즉시 재시작이면 4(수집기가 "Wi-Fi 스캔 정지 복구" 재부팅으로 알림) |
 | 4 | healthy_backoff_reset: 안정 상태 후 백오프 초기화 | 0 |
 | 5 | prior_restart_intent: 직전 자체 재시작 의도 재생 | 0 |
 

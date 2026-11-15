@@ -181,6 +181,18 @@ def boot_reason(event):
     return (reason, firmware) if type(reason) is int and type(firmware) is int else None
 
 
+SCAN_FAULT = "scan_fault"
+
+
+def scan_fault_restart(event):
+    """True for a generator's own restart after a Wi-Fi scan that never completed
+    (wifi.offline.recovery stage 3, detail 4). Its Boot record is an ordinary SW restart."""
+    fields = event.get("fields") or {}
+    values = fields.get("values")
+    return (event.get("event_type") == "Recovery" and fields.get("text") == "wifi.offline.recovery"
+            and isinstance(values, list) and len(values) >= 4 and values[0] == 3 and values[3] == 4)
+
+
 def replay(events, watch):
     """Decisions for a stored event stream (telemetry payload dicts in ingest order)."""
     decisions = []
@@ -197,6 +209,10 @@ def replay(events, watch):
             if label:
                 decisions.append({"type": "reboot", "name": watch.names[mac], "reason": label,
                                   "firmware": found[1], "at": event.get("observed_utc"),
+                                  "session": watch.session if mac in watch.watched else None})
+            elif mac in watch.names and scan_fault_restart(event):
+                decisions.append({"type": "reboot", "name": watch.names[mac], "reason": SCAN_FAULT,
+                                  "firmware": None, "at": event.get("observed_utc"),
                                   "session": watch.session if mac in watch.watched else None})
             continue
         if source != "game_server" or not event.get("occurred_utc"):

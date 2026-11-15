@@ -7,7 +7,10 @@
 // =================================================================================
 #include "library_and_pin.h"
 
-SoftwareSerial       MP3Serial(DFPLAYER_RX_PIN, DFPLAYER_TX_PIN); // DFPlayer와의 UART 통신용 소프트시리얼
+// 하드웨어 UART2를 기존 핀에 배정한다. 비트 타이밍을 칩의 UART 회로가 맡으므로
+// 플래시 쓰기·Wi-Fi로 CPU가 잠깐 멈춰도 프레임이 깨지지 않고, RX 핀 에지마다
+// 인터럽트가 걸리지도 않는다(소프트웨어 시리얼의 약점).
+HardwareSerial       MP3Serial(2);                                // DFPlayer와의 UART 통신 (UART2)
 DFRobotDFPlayerMini  myDFPlayer;                                  // DFPlayer 제어 객체
 bool                 dfPlayerReady = false;                       // 초기화(SD카드 인식) 성공 여부
 
@@ -15,7 +18,7 @@ bool                 dfPlayerReady = false;                       // 초기화(S
 // 모듈이 응답하지 않거나 SD카드가 없으면 dfPlayerReady를 false로 두고 오디오 없이 계속 진행한다
 // (오디오 장애가 게임 진행 자체를 막지 않도록 하기 위함).
 void Mp3_Init() {
-    MP3Serial.begin(9600);
+    MP3Serial.begin(9600, SERIAL_8N1, DFPLAYER_RX_PIN, DFPLAYER_TX_PIN);
     Serial.println("[MP3] init start (SD 스캔 대기 2s)");
     delay(2000);  // DFPlayer 전원 인가 후 SD 스캔에 1.5~3초 필요
     myDFPlayer.setTimeOut(1000);

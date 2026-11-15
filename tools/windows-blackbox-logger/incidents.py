@@ -16,7 +16,8 @@ import time
 from types import SimpleNamespace
 import uuid
 
-from generator_watch import ALWAYS_REPORTED, GROUP_MIN, RESET_LABELS, SILENCE_SECONDS, GeneratorWatch, boot_reason
+from generator_watch import (ALWAYS_REPORTED, GROUP_MIN, RESET_LABELS, SCAN_FAULT, SILENCE_SECONDS, GeneratorWatch, boot_reason,
+                             scan_fault_restart)
 from incident_evidence import GIVE_UP_SECONDS, summarize, wait_seconds
 from telemetry import Event, canonical_json, normalize_mac, parse_utc, utc_now
 
@@ -452,7 +453,13 @@ class IncidentStore:
 
     def _generator_boot(self, event, now, channels):
         """A crash reboot is over by the time its Boot record arrives: announced once, never left open."""
-        found = boot_reason({"event_type": event.event_type, "fields": event.fields}) if self.watch else None
+        record = {"event_type": event.event_type, "fields": event.fields}
+        found = boot_reason(record) if self.watch else None
+        # A restart after a Wi-Fi scan that never completed is announced from its own record:
+        # its Boot record is an ordinary SW restart, which stays unannounced.
+        fault = bool(self.watch) and not found and scan_fault_restart(record)
+        if fault:
+            found = (3, None)
         if not found or event.mac not in self.watch.names:
             return
         age = (parse_utc(now) - parse_utc(event.observed_utc)).total_seconds()
@@ -460,9 +467,10 @@ class IncidentStore:
             return
         observed = parse_utc(event.observed_utc)
         device_boot = event.fields.get("boot")
-        if self._merge_reboot(event, found, observed, device_boot, channels):
+        # The SW Boot record of the same restart is what gets noted on an outage line.
+        if not fault and self._merge_reboot(event, found, observed, device_boot, channels):
             return
-        label = self.watch.reboot_label(found[0], event.mac)
+        label = SCAN_FAULT if fault else self.watch.reboot_label(found[0], event.mac)
         if not label:
             return
         # Outside a game the day's reboots share one card and one Notion page; so do the
@@ -478,7 +486,7 @@ class IncidentStore:
                    "firmware": found[1], "device_boot": device_boot, "game_session_id": session,
                    # The blackbox table is anchored on this record, not on the upload's arrival time.
                    "device_ring": event.fields.get("ring"), "device_seq": event.fields.get("seq")}
-        incident = str(uuid.uuid5(uuid.NAMESPACE_URL, f"has1-generator-reboot/{event.site_id}/{event.mac}/{device_boot}"))
+        incident = str(uuid.uuid5(uuid.NAMESPACE_URL, f"has1-generator-{'scan-fault' if fault else 'reboot'}/{event.site_id}/{event.mac}/{device_boot}"))
         stamp = observed.isoformat(timespec="microseconds")
         inserted = self.db.execute("INSERT OR IGNORE INTO incident_state VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             (incident, event.site_id, self.watch_source, self.watch.boot or "unknown", session,
