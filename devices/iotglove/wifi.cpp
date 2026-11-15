@@ -56,7 +56,8 @@ bool otaOperation = false;
 int diagnosticHttpKind=0; // 0 unknown,1 own snapshot,2 unused (was peer read),3 send,4 chip report,5 management
 // STA link bookkeeping. The Wi-Fi event task marks the first drop of an
 // established link so later reconnect-attempt events never overwrite the
-// original reason; the worker owns the outage timer and attempt counting.
+// original reason; the worker counts attempts and keeps the outage start for
+// its own logs. The main loop times the outage for the restart decision.
 std::atomic<bool> linkUp{false};
 std::atomic<int8_t> lastRssi{0};
 std::atomic<uint32_t> lossCount{0}, lossAtMs{0};
@@ -107,14 +108,7 @@ void publishDiagnostics() {
   const bool connected = linkUp.load();
   if (connected) lastRssi.store(clampRssi(WiFi.RSSI()));
   portENTER_CRITICAL(&diagnosticsMux);
-  diagnostics.wifiConnected = connected;
-  diagnostics.wifiWasUp = wifiWasUp;
-  diagnostics.wifiDownSinceMs = wifiDownSinceMs;
   diagnostics.wifiConnectFailures = connectFailures;
-  diagnostics.wifiLossCount = lossCount.load();
-  diagnostics.wifiLastLossAtMs = lossAtMs.load();
-  diagnostics.wifiLastLossReason = lossReason.load();
-  diagnostics.wifiLastLossRssi = lossRssi.load();
   diagnostics.rssi = lastRssi.load();
   diagnostics.lastHttpError = static_cast<uint8_t>(result.error);
   diagnostics.lastHttpPhase = static_cast<uint8_t>(result.phase);
@@ -647,6 +641,17 @@ bool networkDiagnostics(NetworkDiagnostics& out) {
   portENTER_CRITICAL(&diagnosticsMux);
   out = diagnostics;
   portEXIT_CRITICAL(&diagnosticsMux);
+  // The link and its loss record are read live, not from the published copy:
+  // the worker publishes at most once a second and not while it is inside a
+  // request or a connection attempt. A published link state would stay down
+  // through the first cycle after a reconnect, and a published loss record
+  // could arrive after the restart it is meant to explain. noteLinkLost()
+  // bumps the count last, so reading it first never pairs it with older fields.
+  out.wifiLossCount = lossCount.load();
+  out.wifiLastLossAtMs = lossAtMs.load();
+  out.wifiLastLossReason = lossReason.load();
+  out.wifiLastLossRssi = lossRssi.load();
+  out.wifiConnected = linkUp.load();
   return true;
 }
 

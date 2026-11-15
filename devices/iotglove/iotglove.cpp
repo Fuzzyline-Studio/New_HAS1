@@ -53,6 +53,7 @@ RTC_NOINIT_ATTR NetworkRestartHistory networkRestartHistory;
 RTC_NOINIT_ATTR LinkLossRecord linkLossRecord;
 NetworkRestartPolicy networkRestartPolicy;
 esp_task_wdt_user_handle_t mainWatchdog = nullptr;
+uint32_t mainWatchdogMs = 0;  // Limit last requested by paceMainWatchdog().
 bool stallReported = false, linkDownReported = false;
 uint32_t observedLossCount = 0;
 // Context for the link-loss record: last valid server state, motor activity,
@@ -273,22 +274,21 @@ void printDiagnostics(uint32_t now) {
         (unsigned long)(now - network.startedAtMs), (unsigned long)(now - network.progressAtMs),
         (unsigned long)network.deadlineMs, (unsigned long)network.idleDeadlineMs);
     remoteConsoleLogf("[link] up=%u was_up=%u down_ms=%lu connect_failures=%lu losses=%lu last_loss_reason=%u last_loss_rssi=%d last_loss_age_ms=%lu restart_after_ms=%lu\n",
-        network.wifiConnected, network.wifiWasUp,
-        (unsigned long)(network.wifiConnected ? 0 : now - network.wifiDownSinceMs),
+        network.wifiConnected, networkRestartPolicy.link().wasUp(),
+        (unsigned long)networkRestartPolicy.link().downMs(now),
         (unsigned long)network.wifiConnectFailures, (unsigned long)network.wifiLossCount,
         network.wifiLastLossReason, network.wifiLastLossRssi,
         (unsigned long)(network.wifiLossCount ? now - network.wifiLastLossAtMs : 0),
-        (unsigned long)(network.wifiWasUp ? kWifiLostRestartMs : kWifiNeverUpRestartMs));
+        (unsigned long)networkRestartPolicy.link().limitMs());
     remoteConsoleLogf("[http] error=%u phase=%u status=%d elapsed_ms=%lu bytes=%lu primary_failures=%lu reconnects=%lu cooldown_ms=%lu\n",
         network.lastHttpError, network.lastHttpPhase, network.lastHttpStatus,
         (unsigned long)network.lastHttpElapsedMs, (unsigned long)network.lastHttpBytes,
         (unsigned long)network.primaryTransportFailures, (unsigned long)network.forcedReconnects,
         (unsigned long)network.reconnectCooldownMs);
-    remoteConsoleLogf("[resources] heap=%lu largest=%lu worker_stack_min=%lu reset_reason=%u recovery_restarts=%lu restart_wait_ms=%lu main_wdt=%u\n",
+    remoteConsoleLogf("[resources] heap=%lu largest=%lu worker_stack_min=%lu reset_reason=%u recovery_restarts=%lu main_wdt=%u\n",
         (unsigned long)network.heapFree, (unsigned long)network.heapLargest,
         (unsigned long)network.workerStackHighWater, static_cast<unsigned>(esp_reset_reason()),
-        (unsigned long)networkRestartHistory.attempts,
-        (unsigned long)networkRestartPolicy.remainingMs(now), mainWatchdog != nullptr);
+        (unsigned long)networkRestartHistory.attempts, mainWatchdog != nullptr);
   }
   remoteConsoleLogf("[inputs] chip_gpio26=%d button_gpio27=%d chip_debounced=%u button_debounced=%u chip_model=%u\n",
       sensorChipRaw(), sensorButtonRaw(),
@@ -658,12 +658,17 @@ void handleConsoleCommand(char command, uint32_t now) {
     if (command == 's' || command == '?') printDiagnostics(now);
     if (command == 'p') sendProbe(now, true);
 }
-void armMainWatchdog() {
-  if (mainWatchdog) return;  // Retry history never disables actual main-loop hang detection.
-  // Preserve the configured idle subscribers; allow flash erases more time than
-  // the core's five-second default. HTTP worker stalls have their own 20s limit.
+// The loop never blocks on the network (the worker does, under its own 20s
+// limit), so a pass takes milliseconds: 15s is three times the core's default.
+// While an OTA writes the flash the pass time is unmeasured, so the pair OTA
+// keeps the former 60s. Applied only when the wanted limit changes.
+void paceMainWatchdog() {
+  const uint32_t wanted = otaBusy() ? 60000U : 15000U;
+  if (wanted == mainWatchdogMs) return;
+  mainWatchdogMs = wanted;  // Recorded even on failure: no retry or log every pass.
   esp_task_wdt_config_t config{};
-  config.timeout_ms = 60000;
+  config.timeout_ms = wanted;
+  // Preserve the configured idle subscribers.
 #if CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0
   config.idle_core_mask |= 1U;
 #endif
@@ -673,7 +678,13 @@ void armMainWatchdog() {
   config.trigger_panic = true;
   esp_err_t err = esp_task_wdt_reconfigure(&config);
   if (err == ESP_ERR_INVALID_STATE) err = esp_task_wdt_init(&config);
-  if (err == ESP_OK) err = esp_task_wdt_add_user("glove-main-progress", &mainWatchdog);
+  if (err != ESP_OK) remoteConsoleLogf("[recovery] main watchdog limit %lu ms not applied error=%d\n",
+      (unsigned long)wanted, err);
+}
+void armMainWatchdog() {
+  if (mainWatchdog) return;  // Retry history never disables actual main-loop hang detection.
+  paceMainWatchdog();
+  const esp_err_t err = esp_task_wdt_add_user("glove-main-progress", &mainWatchdog);
   if (err != ESP_OK) remoteConsoleLogf("[recovery] main watchdog unavailable error=%d\n", err);
 }
 
@@ -707,9 +718,12 @@ void monitorNetwork() {
   }
   const bool ota = otaBusy() || d.phase == NetworkPhase::Ota;
   const bool stalled = !ota && networkWorkerStalled(d, now);
-  const bool linkDown = !ota && wifiLinkDownTooLong(d, now);
-  // These latches limit diagnostics only. poll() below always reevaluates the
-  // recovery deadline, including after the first stall/down report.
+  // poll() advances the main loop's own outage clock and decides the restart;
+  // the latches below limit diagnostics only.
+  const NetworkRestartDecision decision = networkRestartPolicy.poll(
+      networkRestartHistory,d,now,ota);
+  const LinkOutageClock& link = networkRestartPolicy.link();
+  const bool linkDown = !ota && link.tooLong(now);
   if (!stalled) stallReported = false;
   else if (!stallReported) {
     stallReported = true;
@@ -723,29 +737,16 @@ void monitorNetwork() {
   if (!linkDown) linkDownReported = false;
   else if (!linkDownReported) {
     linkDownReported = true;
-    has1blackbox::blackbox.log(has1blackbox::EventType::Recovery,now-d.wifiDownSinceMs,
-        d.wifiConnectFailures,d.wifiWasUp,d.wifiLastLossReason,"wifi.down.threshold");
+    has1blackbox::blackbox.log(has1blackbox::EventType::Recovery,link.downMs(now),
+        d.wifiConnectFailures,link.wasUp(),d.wifiLastLossReason,"wifi.down.threshold");
     remoteConsoleLogf("[recovery] wifi down %lu ms was_up=%u connect_failures=%lu restarts=%lu\n",
-        (unsigned long)(now-d.wifiDownSinceMs),d.wifiWasUp,
+        (unsigned long)link.downMs(now),link.wasUp(),
         (unsigned long)d.wifiConnectFailures,(unsigned long)networkRestartHistory.attempts);
   }
-  const NetworkRestartDecision decision = networkRestartPolicy.poll(
-      networkRestartHistory,d,now,bootId ^ networkRestartHistory.attempts,ota);
   if (decision.restored) {
     has1blackbox::blackbox.log(has1blackbox::EventType::Recovery,decision.previousAttempts,
         NetworkRestartPolicy::kStableMs,d.sequence,0,"restart.backoff_reset");
-    remoteConsoleLogf("[recovery] link connected and worker progressing for 10 minutes; restart backoff reset\n");
-  }
-  if (decision.cancelled) {
-    has1blackbox::blackbox.log(has1blackbox::EventType::Recovery,decision.cause,
-        networkRestartHistory.attempts,decision.elapsedMs,0,"restart.wait_cancel");
-  }
-  if (decision.waitingStarted && !decision.restart) {
-    has1blackbox::blackbox.log(has1blackbox::EventType::Recovery,decision.cause,
-        networkRestartHistory.attempts,decision.waitMs,decision.remainingMs,"restart.wait");
-    remoteConsoleLogf("[recovery] restart pending cause=%u attempts=%lu total_wait_ms=%lu remaining_ms=%lu\n",
-        decision.cause,(unsigned long)networkRestartHistory.attempts,
-        (unsigned long)decision.waitMs,(unsigned long)decision.remainingMs);
+    remoteConsoleLogf("[recovery] link connected and worker progressing for 10 minutes; restart count reset\n");
   }
   if (decision.restart) {
     const auto cause = decision.cause == 2 ? LinkLossCause::WorkerStall : LinkLossCause::WifiDown;
@@ -800,9 +801,8 @@ void gloveBegin(int firmwareVersion, int partitionVersion) {
     if (networkReady) {
       networkReportChip(sensorChipPresent());
       armMainWatchdog();
-      remoteConsoleLogf("[recovery] reset_reason=%u attempts=%lu retry_backoff_ms=%lu main_wdt=%u\n",
-          static_cast<unsigned>(reason),(unsigned long)networkRestartHistory.attempts,
-          (unsigned long)NetworkRestartPolicy::backoffMs(networkRestartHistory.attempts),mainWatchdog != nullptr);
+      remoteConsoleLogf("[recovery] reset_reason=%u attempts=%lu main_wdt=%u\n",
+          static_cast<unsigned>(reason),(unsigned long)networkRestartHistory.attempts,mainWatchdog != nullptr);
     }
   }
   hello(nextId()); sendMode();
@@ -842,6 +842,6 @@ void gloveLoop() {
       battery.configured() && batteryVolts>0 ? int(batteryVolts*1000) : -1,peer.online(millis()));
   monitorNetwork();
   // Feed only after completing a full main-loop pass, including the worker check.
-  if (mainWatchdog) esp_task_wdt_reset_user(mainWatchdog);
+  if (mainWatchdog) { paceMainWatchdog(); esp_task_wdt_reset_user(mainWatchdog); }
   delay(1);  // Yield to Wi-Fi/RTOS; all timers above are nonblocking.
 }

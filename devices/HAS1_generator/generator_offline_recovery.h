@@ -22,12 +22,11 @@ inline bool boot(Retained &s,bool softwareReset) {
   if(!previous) s=Retained{};
   s.pending=0;seal(s);return previous;
 }
-inline uint32_t delayMs(uint32_t attempts,uint32_t deviceSalt,bool hadConnection=false) {
+inline uint32_t delayMs(uint32_t deviceSalt,bool hadConnection) {
   // Restore a previously working link promptly; allow more time for first boot
-  // association. Own repeated recovery boots retain the slower storm backoff.
-  const uint32_t initial=hadConnection?30000u:180000u;
-  const uint32_t base=attempts==0?initial:attempts==1?300000u:attempts==2?900000u:1800000u;
-  return base+(deviceSalt%5001u);
+  // association. Earlier own restarts never lengthen this: a boot that has not
+  // associated yet already waits 180s, which paces restarts while the AP is off.
+  return (hadConnection?30000u:180000u)+(deviceSalt%5001u);
 }
 inline void requested(Retained &s,uint32_t elapsed) {
   if(s.attempts<65535) ++s.attempts;
@@ -56,8 +55,8 @@ struct Policy {
     return false;
   }
   uint32_t elapsed(uint32_t now)const{return offline?uint32_t(now-offlineSince):0;}
-  bool due(uint32_t now,const Retained &history,uint32_t salt)const {
-    return offline&&elapsed(now)>=delayMs(history.attempts,salt,hadConnection);
+  bool due(uint32_t now,uint32_t salt)const {
+    return offline&&elapsed(now)>=delayMs(salt,hadConnection);
   }
 };
 } // namespace GeneratorOfflineRecovery

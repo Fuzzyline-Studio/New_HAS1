@@ -47,21 +47,22 @@ int main() {
   assert(!strcmp(linkLossCauseName(static_cast<LinkLossCause>(record.cause)), "worker_stall"));
   assert(!strcmp(linkLossCauseName(LinkLossCause::None), "none"));
 
-  // Outage policy: a link that was up gets 30s, a boot that never associated 180s.
-  NetworkDiagnostics d;
-  d.wifiConnected = false; d.wifiWasUp = true; d.wifiDownSinceMs = 10000;
-  assert(!wifiLinkDownTooLong(d, 39999));
-  assert(wifiLinkDownTooLong(d, 40000));
-  d.wifiConnected = true;
-  assert(!wifiLinkDownTooLong(d, 40000));
-  d.wifiConnected = false; d.wifiWasUp = false;
-  assert(!wifiLinkDownTooLong(d, 189999));
-  assert(wifiLinkDownTooLong(d, 190000));
-  d.phase = NetworkPhase::Ota;  // OTA keeps the worker-watchdog exemption.
-  assert(!wifiLinkDownTooLong(d, 190000));
-  d.phase = NetworkPhase::Connecting; d.wifiWasUp = true;
-  d.wifiDownSinceMs = UINT32_MAX - 1000;  // Rollover of millis(): 30s later is 28999.
-  assert(!wifiLinkDownTooLong(d, 28998));
-  assert(wifiLinkDownTooLong(d, 28999));
+  // Outage clock: a link that was up gets 10s, a boot that never associated 180s,
+  // both counted from the first observation of the link reading down.
+  LinkOutageClock never;
+  never.observe(false, 10000);
+  assert(!never.wasUp() && never.limitMs() == 180000 && never.downMs(10000) == 0);
+  assert(!never.tooLong(189999) && never.tooLong(190000));
+  never.observe(false, 150000);  // Repeated down samples never move the start.
+  assert(never.downMs(190000) == 180000);
+  LinkOutageClock lost;
+  lost.observe(true, 0);
+  assert(lost.wasUp() && !lost.tooLong(600000) && lost.downMs(600000) == 0);
+  lost.observe(false, 600000);
+  assert(lost.limitMs() == 10000 && !lost.tooLong(609999) && lost.tooLong(610000));
+  lost.observe(true, 610000);
+  assert(!lost.tooLong(700000));
+  lost.observe(false, UINT32_MAX - 1000);  // Rollover of millis(): 10s later is 8999.
+  assert(!lost.tooLong(8998) && lost.tooLong(8999));
   puts("PASS: link loss record capture/complete and STA outage restart policy");
 }

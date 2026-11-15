@@ -2,29 +2,31 @@
 #include <cassert>
 #include <cstdint>
 #include <cstdio>
+#include <initializer_list>
 using namespace iotglove;
-static NetworkDiagnostics offline(uint32_t now, bool wasUp=true, uint32_t since=0) {
+static NetworkDiagnostics offline(uint32_t now) {
   NetworkDiagnostics d;
   d.phase=NetworkPhase::Backoff; d.sequence=now; d.startedAtMs=now; d.progressAtMs=now;
-  d.deadlineMs=20000; d.wifiWasUp=wasUp; d.wifiDownSinceMs=since;
+  d.deadlineMs=20000;
   return d;
 }
 static NetworkDiagnostics online(uint32_t now) {
   auto d=offline(now); d.wifiConnected=true; return d;
 }
-static void retainedUnlimitedAndSaturation() {
+// Associates at `at`, loses the link 1ms later and is due exactly 10s after.
+static bool lostLinkRestarts(NetworkRestartHistory& h, uint32_t at) {
+  NetworkRestartPolicy policy;
+  assert(!policy.poll(h,online(at),at).restart);
+  assert(!policy.poll(h,offline(at+1U),at+1U).restart);
+  assert(!policy.poll(h,offline(at+10000U),at+10000U).restart);
+  const auto r=policy.poll(h,offline(at+10001U),at+10001U);
+  return r.restart && r.cause==3;
+}
+static void retainedCountAndSaturation() {
   NetworkRestartHistory h{}; NetworkRestartPolicy::boot(h,false,false);
   assert(h.magic==NetworkRestartPolicy::kMagic && h.attempts==0);
   for (unsigned expected=1;expected<=300;++expected) {
-    NetworkRestartPolicy policy;
-    const uint32_t delay=NetworkRestartPolicy::backoffMs(h.attempts);
-    auto r=policy.poll(h,offline(30000),30000,0);
-    if (expected==1) assert(r.restart);
-    else {
-      assert(!r.restart && r.waitingStarted && r.waitMs==delay);
-      assert(!policy.poll(h,offline(delay-1),delay-1,0).restart);
-      r=policy.poll(h,offline(delay),delay,0); assert(r.restart);
-    }
+    assert(lostLinkRestarts(h,0)); // Every repeat is due at the same 10s.
     assert(h.attempts==expected && h.requested);
     NetworkRestartPolicy::boot(h,true,false);
     assert(h.attempts==expected && !h.requested);
@@ -34,8 +36,7 @@ static void retainedUnlimitedAndSaturation() {
   assert(NetworkRestartPolicy::diagnosticAttempt(256)==255);
   assert(NetworkRestartPolicy::diagnosticAttempt(UINT32_MAX)==255);
   h.attempts=UINT32_MAX;
-  NetworkRestartPolicy saturated;
-  assert(saturated.poll(h,offline(1800000),1800000,0).restart);
+  assert(lostLinkRestarts(h,0));
   assert(h.attempts==UINT32_MAX && h.requested);
   NetworkRestartPolicy::boot(h,true,false); assert(h.attempts==UINT32_MAX);
   NetworkRestartPolicy::boot(h,false,true); assert(h.attempts==UINT32_MAX);
@@ -45,74 +46,81 @@ static void retainedUnlimitedAndSaturation() {
   h={0x47575232U,3,true}; NetworkRestartPolicy::boot(h,true,false);
   assert(h.magic==NetworkRestartPolicy::kMagic && h.attempts==0); // Old layout policy invalidated.
 }
-static void thresholdsAndPersistentStall() {
-  NetworkRestartHistory h{NetworkRestartPolicy::kMagic,0,false};
-  NetworkRestartPolicy policy;
-  assert(!policy.poll(h,offline(29999),29999,5000).restart);
-  assert(policy.poll(h,offline(30000),30000,5000).restart); // First keeps exact old threshold.
-  h={NetworkRestartPolicy::kMagic,0,false}; NetworkRestartPolicy never;
-  assert(!never.poll(h,offline(179999,false),179999,0).restart);
-  assert(never.poll(h,offline(180000,false),180000,0).restart);
-  h={NetworkRestartPolicy::kMagic,1,false}; NetworkRestartPolicy stall;
-  auto d=online(0);d.phase=NetworkPhase::Http;
-  assert(!stall.poll(h,d,19999,5000).restart);
-  auto r=stall.poll(h,d,20000,5000);
-  assert(r.waitingStarted && !r.restart && r.waitMs==305000 && r.remainingMs==285000);
-  // A one-shot log at 20s must not suppress the later decision: production poll
-  // is called each loop even though no new waitingStarted/stall report is due.
-  for (uint32_t now=21000;now<305000;now+=1000) {
-    r=stall.poll(h,d,now,0); assert(!r.waitingStarted && !r.restart);
+static void thresholdsIgnoreHistory() {
+  for (uint32_t attempts : {0U,1U,2U,3U,99U}) {
+    NetworkRestartHistory h{NetworkRestartPolicy::kMagic,attempts,false};
+    assert(lostLinkRestarts(h,5000) && h.attempts==attempts+1);
+    h={NetworkRestartPolicy::kMagic,attempts,false}; NetworkRestartPolicy never;
+    assert(!never.poll(h,offline(0),0).restart); // Never associated this boot.
+    assert(!never.poll(h,offline(179999),179999).restart);
+    assert(never.poll(h,offline(180000),180000).restart);
+    h={NetworkRestartPolicy::kMagic,attempts,false}; NetworkRestartPolicy stall;
+    auto d=online(0);d.phase=NetworkPhase::Http;
+    assert(!stall.poll(h,d,19999).restart);
+    const auto r=stall.poll(h,d,20000);
+    assert(r.restart && r.cause==2 && h.requested);
   }
-  assert(stall.poll(h,d,305000,0).restart); // Entropy captured once, not jittered every pass.
 }
-static void recoveryOtaAndChangingCause() {
+static void ownOutageClock() {
+  // Up for ten minutes, then down: the limit is counted from the first down
+  // observation, not from boot or an earlier outage.
+  NetworkRestartHistory h{NetworkRestartPolicy::kMagic,0,false}; NetworkRestartPolicy policy;
+  for (uint32_t now=0;now<=600000;now+=1000) assert(!policy.poll(h,online(now),now).restart);
+  assert(!policy.poll(h,offline(600100),600100).restart);
+  assert(!policy.poll(h,offline(610099),610099).restart);
+  assert(policy.poll(h,offline(610100),610100).restart && h.attempts==1);
+  // A reconnection in between starts a new outage.
+  h={NetworkRestartPolicy::kMagic,0,false}; NetworkRestartPolicy flap;
+  flap.poll(h,online(0),0); flap.poll(h,offline(1000),1000); flap.poll(h,offline(9000),9000);
+  assert(!flap.poll(h,online(9500),9500).restart);
+  assert(!flap.poll(h,offline(10000),10000).restart);
+  assert(!flap.poll(h,offline(19999),19999).restart);
+  assert(flap.poll(h,offline(20000),20000).restart);
+}
+static void recoveryOtaAndCause() {
   NetworkRestartHistory h{NetworkRestartPolicy::kMagic,1,false}; NetworkRestartPolicy policy;
-  assert(policy.poll(h,offline(30000),30000,0).waitingStarted);
-  auto r=policy.poll(h,online(50000),50000,0);
-  assert(r.cancelled && r.cause==3 && r.elapsedMs==50000 && h.attempts==1);
-  assert(!policy.poll(h,online(300000),300000,0).restart);
-  assert(policy.poll(h,offline(330000,true,300000),330000,0).waitingStarted);
-  r=policy.poll(h,offline(350000,true,300000),350000,0,true);
-  assert(r.cancelled && !r.restart); // Pair-level OTA guard, not just worker phase.
-  auto ota=offline(2000000);ota.phase=NetworkPhase::Ota;
-  assert(!policy.poll(h,ota,2000000,0).restart);
-  NetworkRestartPolicy changes;
-  auto d=offline(30000);assert(changes.poll(h,d,30000,0).waitingStarted);
-  d=offline(50000);d.phase=NetworkPhase::Http;d.startedAtMs=30000;
-  r=changes.poll(h,d,50000,0);assert(r.cause==2 && !r.waitingStarted && r.elapsedMs==50000);
-  r=changes.poll(h,offline(100000),100000,0);assert(r.cause==3 && !r.waitingStarted);
-  assert(changes.poll(h,offline(300000),300000,0).restart); // Cause swaps never push deadline out.
+  policy.poll(h,online(0),0); policy.poll(h,offline(1000),1000);
+  auto r=policy.poll(h,online(9000),9000);
+  assert(!r.restart && !r.cause && h.attempts==1); // Link back before the limit.
+  policy.poll(h,offline(10000),10000);
+  r=policy.poll(h,offline(50000),50000,true);
+  assert(!r.restart && h.attempts==1); // Pair-level OTA guard, not just worker phase.
+  auto ota=offline(60000);ota.phase=NetworkPhase::Ota;
+  assert(!policy.poll(h,ota,60000).restart);
+  // The outage kept running under the OTA guard and is due once the guard ends.
+  assert(policy.poll(h,offline(60001),60001).restart && h.attempts==2);
+  h={NetworkRestartPolicy::kMagic,1,false}; NetworkRestartPolicy both;
+  both.poll(h,online(0),0); both.poll(h,offline(1000),1000);
+  auto d=offline(50000);d.phase=NetworkPhase::Http;d.startedAtMs=30000;
+  r=both.poll(h,d,50000);
+  assert(r.restart && r.cause==2); // A stalled worker outranks the link.
 }
 static void stableMeansConnectedAndProgressing() {
   NetworkRestartHistory h{NetworkRestartPolicy::kMagic,99,false}; NetworkRestartPolicy policy;
   // Reconnect attempts that keep advancing while disconnected cannot restore.
-  for (uint32_t now=0;now<=600000;now+=1000) {
-    auto r=policy.poll(h,offline(now,true,now),now,0);assert(!r.restored);
-  }
-  assert(h.attempts==99);
-  // Ten connected minutes with real progress restores the backoff.
+  for (uint32_t now=0;now<=600000;now+=1000)
+    assert(!policy.poll(h,offline(now),now).restored);
+  h={NetworkRestartPolicy::kMagic,99,false};
+  // Ten connected minutes with real progress clear the count.
   for (uint32_t now=601000;now<1201000;now+=1000)
-    assert(!policy.poll(h,online(now),now,0).restored);
-  auto r=policy.poll(h,online(1201000),1201000,0);
+    assert(!policy.poll(h,online(now),now).restored);
+  auto r=policy.poll(h,online(1201000),1201000);
   assert(r.restored && r.previousAttempts==99 && h.attempts==0);
   h.attempts=5;NetworkRestartPolicy frozen;
   auto d=online(0);d.deadlineMs=0; // Even stale diagnostics without a deadline cannot earn reset.
-  for(uint32_t now=0;now<1800000;now+=1000) assert(!frozen.poll(h,d,now,0).restored);
+  for(uint32_t now=0;now<1800000;now+=1000) assert(!frozen.poll(h,d,now).restored);
   assert(h.attempts==5);
   NetworkRestartPolicy interrupted;
-  for(uint32_t now=0;now<400000;now+=1000) interrupted.poll(h,online(now),now,0);
-  interrupted.poll(h,offline(400000,true,400000),400000,0);
-  assert(!interrupted.poll(h,online(601000),601000,0).restored);
+  for(uint32_t now=0;now<400000;now+=1000) interrupted.poll(h,online(now),now);
+  interrupted.poll(h,offline(400000),400000);
+  assert(!interrupted.poll(h,online(601000),601000).restored);
 }
 static void rollover() {
-  const uint32_t start=UINT32_MAX-10000U;
-  NetworkRestartHistory h{NetworkRestartPolicy::kMagic,1,false};NetworkRestartPolicy p;
-  assert(p.poll(h,offline(start+30000U,true,start),start+30000U,0).waitingStarted);
-  assert(!p.poll(h,offline(start+299999U,true,start),start+299999U,0).restart);
-  assert(p.poll(h,offline(start+300000U,true,start),start+300000U,0).restart);
+  NetworkRestartHistory h{NetworkRestartPolicy::kMagic,1,false};
+  assert(lostLinkRestarts(h,UINT32_MAX-5000U));
 }
 int main() {
-  retainedUnlimitedAndSaturation(); thresholdsAndPersistentStall();
-  recoveryOtaAndChangingCause(); stableMeansConnectedAndProgressing(); rollover();
-  puts("PASS: unlimited paced restart, >255/saturation, persistent fault due, recovery/OTA cancellation, cause swaps, true link health and wrap");
+  retainedCountAndSaturation(); thresholdsIgnoreHistory(); ownOutageClock();
+  recoveryOtaAndCause(); stableMeansConnectedAndProgressing(); rollover();
+  puts("PASS: restart due at its own limit whatever the count, outage counted from the first down observation, >255/saturation, recovery/OTA guard, true link health and wrap");
 }

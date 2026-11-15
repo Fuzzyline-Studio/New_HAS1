@@ -1005,18 +1005,18 @@ static bool NetworkOfflineRecoveryService() {
   const bool wasOffline=networkRecoveryPolicy.offline;
   if(networkRecoveryPolicy.sample(now,online,networkRecoveryHistory)) {
     BlackBoxOfflineRecovery(4,0,0,0);
-    DiagnosticPrintf("[NET] wifi-offline restart backoff reset after 10 minutes of healthy link/server progress\r\n");
+    DiagnosticPrintf("[NET] wifi-offline restart count reset after 10 minutes of healthy link/server progress\r\n");
   }
   if(!online&&!wasOffline) {
     networkRecoveryBlockedLogged=false;
     BlackBoxOfflineRecovery(1,0,networkRecoveryHistory.attempts,
-      GeneratorOfflineRecovery::delayMs(networkRecoveryHistory.attempts,networkRecoverySalt,networkRecoveryPolicy.hadConnection));
+      GeneratorOfflineRecovery::delayMs(networkRecoverySalt,networkRecoveryPolicy.hadConnection));
   }
   portENTER_CRITICAL(&networkMux);
   const bool fault=networkDriverFault&&GeneratorOfflineRecovery::faultRestartDue(networkRecoveryHistory);
   portEXIT_CRITICAL(&networkMux);
   if(fault){NetworkDriverFaultLog();} // May have latched after this loop's snapshot.
-  if(!fault&&!networkRecoveryPolicy.due(now,networkRecoveryHistory,networkRecoverySalt)){return false;}
+  if(!fault&&!networkRecoveryPolicy.due(now,networkRecoverySalt)){return false;}
   uint32_t blocked=0;
   if(networkMaintenance){blocked|=1;}
   // Only a verified durable conditional intent may survive an uncertain

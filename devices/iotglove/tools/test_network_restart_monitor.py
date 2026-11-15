@@ -9,7 +9,7 @@ GLOVE = Path(__file__).resolve().parents[1]
 def functions():
     source = (GLOVE / "iotglove.cpp").read_text()
     output = []
-    for name in ("armMainWatchdog", "monitorNetwork"):
+    for name in ("paceMainWatchdog", "armMainWatchdog", "monitorNetwork"):
         match = re.search(rf"void {name}\(\) \{{", source)
         start, cursor, depth = match.start(), match.end(), 1
         while depth:
@@ -22,23 +22,20 @@ HARNESS = r"""
 #include "network_restart.h"
 #include "link_loss.h"
 #include <cassert>
-#include <cstring>
 using namespace iotglove;
 using esp_err_t = int;
 constexpr int ESP_OK=0, ESP_ERR_INVALID_STATE=1;
 struct esp_task_wdt_config_t { unsigned timeout_ms=0,idle_core_mask=0; bool trigger_panic=false; };
 void* mainWatchdog=nullptr;
+uint32_t mainWatchdogMs=0;
+unsigned watchdogConfigs=0;
 unsigned watchdogAdds=0, watchdogTimeout=0;
-esp_err_t esp_task_wdt_reconfigure(esp_task_wdt_config_t* c) {watchdogTimeout=c->timeout_ms;return ESP_OK;}
+esp_err_t esp_task_wdt_reconfigure(esp_task_wdt_config_t* c) {watchdogTimeout=c->timeout_ms;++watchdogConfigs;return ESP_OK;}
 esp_err_t esp_task_wdt_init(esp_task_wdt_config_t*) {return ESP_OK;}
 esp_err_t esp_task_wdt_add_user(const char*,void** out) {++watchdogAdds;*out=(void*)1;return ESP_OK;}
 namespace has1blackbox {
 enum class EventType {State,Recovery};
-unsigned waitLogs=0, cancelLogs=0;
-struct Logger { void log(EventType,int32_t,int32_t,int32_t,int32_t,const char* text) {
-  if (!strcmp(text,"restart.wait")) ++waitLogs;
-  if (!strcmp(text,"restart.wait_cancel")) ++cancelLogs;
-}} blackbox;
+struct Logger { void log(EventType,int32_t,int32_t,int32_t,int32_t,const char*) {} } blackbox;
 }
 struct Esp { unsigned restarts=0; void restart(){++restarts;} } ESP;
 NetworkRestartHistory networkRestartHistory{NetworkRestartPolicy::kMagic,0,false};
@@ -46,7 +43,7 @@ NetworkRestartPolicy networkRestartPolicy;
 NetworkDiagnostics sample;
 LinkLossRecord linkLossRecord{};
 bool networkReady=true,stallReported=false,linkDownReported=false,ota=false;
-uint32_t nowMs=0,observedLossCount=0,bootId=1,lastBatteryAdcSample=0;
+uint32_t nowMs=0,observedLossCount=0,lastBatteryAdcSample=0;
 int lastValidPhase=0,lastValidRole=0,lastValidDeviceState=0,restartReason=0;
 uint32_t millis(){return nowMs;}
 bool networkDiagnostics(NetworkDiagnostics& d){d=sample;return true;}
@@ -65,31 +62,38 @@ void motorOff(){assert(!ESP.restarts);++motorOffs;} // Motor must be cut before 
 void tick(uint32_t at,bool connected=false){
   nowMs=at;sample.phase=NetworkPhase::Backoff;sample.sequence=at;
   sample.startedAtMs=sample.progressAtMs=at;sample.deadlineMs=20000;
-  sample.wifiWasUp=true;sample.wifiConnected=connected;monitorNetwork();
+  sample.wifiConnected=connected;monitorNetwork();
 }
 void reset(unsigned attempts){
   networkRestartHistory={NetworkRestartPolicy::kMagic,attempts,false};
   networkRestartPolicy=NetworkRestartPolicy{};sample=NetworkDiagnostics{};
   linkLossRecord={};stallReported=linkDownReported=ota=false;ESP.restarts=0;
-  has1blackbox::waitLogs=has1blackbox::cancelLogs=motorOffs=0;
+  motorOffs=0;
 }
 int main(){
   reset(UINT32_MAX);armMainWatchdog();
-  assert(mainWatchdog && watchdogAdds==1 && watchdogTimeout==60000);
+  assert(mainWatchdog && watchdogAdds==1 && watchdogTimeout==15000);
   armMainWatchdog();assert(watchdogAdds==1);
-  reset(1); // bootId XOR attempts = 0 jitter
-  tick(30000);assert(linkDownReported && !ESP.restarts && has1blackbox::waitLogs==1);
-  tick(299999);assert(!ESP.restarts && has1blackbox::waitLogs==1);
-  tick(300000);assert(ESP.restarts==1 && restartReason==3 && motorOffs==1); // Reporting latch cannot block due.
-  reset(1);tick(30000);tick(50000,true);
-  assert(has1blackbox::cancelLogs==1);tick(300000,true);assert(!ESP.restarts);
-  reset(1);tick(30000);ota=true;tick(300000);
-  assert(has1blackbox::cancelLogs==1 && !ESP.restarts);
+  // OTA keeps the former 60s; the limit is applied only when it changes.
+  paceMainWatchdog();assert(watchdogConfigs==1);
+  ota=true;paceMainWatchdog();paceMainWatchdog();assert(watchdogTimeout==60000 && watchdogConfigs==2);
+  ota=false;paceMainWatchdog();assert(watchdogTimeout==15000 && watchdogConfigs==3);
+  reset(1); // An earlier restart never delays the next one.
+  tick(0,true);tick(1000);tick(10999);assert(!linkDownReported && !ESP.restarts);
+  tick(11000);assert(linkDownReported && ESP.restarts==1 && restartReason==3 && motorOffs==1);
+  assert(networkRestartHistory.attempts==2 && networkRestartHistory.requested);
+  reset(1);tick(0,true);tick(1000);tick(9000,true);tick(300000,true);assert(!ESP.restarts);
+  reset(1);tick(0,true);tick(1000);ota=true;tick(300000);assert(!ESP.restarts);
   reset(1);sample.phase=NetworkPhase::Http;sample.deadlineMs=20000;sample.wifiConnected=true;
-  nowMs=20000;monitorNetwork();assert(stallReported && !ESP.restarts);
-  nowMs=300000;monitorNetwork();assert(ESP.restarts==1 && restartReason==2 && motorOffs==1);
-  reset(300);tick(1800000);assert(ESP.restarts==0); // Jitter = bootId ^ 300 = 301.
-  tick(1800301);assert(ESP.restarts==1 && linkLossRecord.restartAttempt==255);
+  nowMs=19999;monitorNetwork();assert(!stallReported && !ESP.restarts);
+  nowMs=20000;monitorNetwork();assert(stallReported && ESP.restarts==1 && restartReason==2 && motorOffs==1);
+  // Up for ten minutes, then down: counted from the first down observation.
+  reset(0);tick(600000,true);
+  tick(600100);tick(610099);assert(!ESP.restarts);
+  tick(610100);assert(ESP.restarts==1 && restartReason==3);
+  reset(0);tick(0);tick(179999);assert(!ESP.restarts); // Never associated this boot.
+  tick(180000);assert(ESP.restarts==1);
+  reset(300);tick(0,true);tick(1);tick(10001);assert(ESP.restarts==1 && linkLossRecord.restartAttempt==255);
 }
 """
 class MonitorTest(unittest.TestCase):
@@ -100,5 +104,14 @@ class MonitorTest(unittest.TestCase):
             subprocess.run([os.environ.get("CXX","c++"),"-std=c++17","-Wall","-Wextra","-Werror","-pedantic",
                             "-I",str(GLOVE),str(source),"-o",str(binary)],check=True)
             subprocess.run([str(binary)],check=True)
+    def test_main_loop_reads_the_live_link_state(self):
+        source=(GLOVE/"wifi.cpp").read_text(encoding="utf-8")
+        body=source[source.index("bool networkDiagnostics(NetworkDiagnostics& out) {"):]
+        body=body[:body.index("\n}\n")]
+        self.assertLess(body.index("out = diagnostics;"),body.index("out.wifiConnected = linkUp.load();"))
+        for field in ("wifiLossCount = lossCount", "wifiLastLossAtMs = lossAtMs",
+                      "wifiLastLossReason = lossReason", "wifiLastLossRssi = lossRssi"):
+            self.assertIn("out."+field+".load();",body)
+            self.assertNotIn("diagnostics."+field,source)
 if __name__ == "__main__":
     unittest.main()
