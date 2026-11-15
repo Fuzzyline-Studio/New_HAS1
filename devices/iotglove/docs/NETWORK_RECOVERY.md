@@ -31,10 +31,10 @@ Arduino-ESP32 3.3.11 HTTPClient의 응답 파서 메서드를 프로젝트 전�
 worker가 단계·sequence·시작/진행/완료 시각을 짧은 critical section으로 공개한다. 메인은 복사 이후의 `millis()`와 비교하여 두 코어의 시각 역전으로 인한 오판을 피한다. 서버 성공 시각으로 watchdog을 판단하지 않는다.
 
 - 일반 HTTP 작업 20초, 연결/시작 30초, idle 20초, 의도된 대기는 지정 대기+20초가 최후 감시 기한이다. 정상 실패/재시도 중인 서버 장기 중단은 재부팅 사유가 아니다.
-- main loop 완료 지점을 [ESP-IDF task watchdog user](https://docs.espressif.com/projects/esp-idf/en/v5.5.1/esp32/api-reference/system/wdts.html)로 감시한다. TTGO 본게임에서 기존 idle 구성을 보존하고 60초로 설정한다. 일반 HTTP는 더 짧은 별도 감시를 받는다.
+- main loop 완료 지점을 [ESP-IDF task watchdog user](https://docs.espressif.com/projects/esp-idf/en/v5.5.1/esp32/api-reference/system/wdts.html)로 감시한다. TTGO 본게임에서 기존 idle 구성을 보존하고 15초로 설정한다(v26까지 60초). 루프를 한 바퀴 다 돈 뒤에만 갱신하며 다른 조건은 없다. 일반 HTTP는 더 짧은 별도 감시를 받는다.
 - 정체가 기한을 초과하면 소켓 사용 중인 task를 강제 삭제하지 않고 TTGO 전체 재시작을 최후 수단으로 사용한다. 재시작은 기한에 도달한 그 루프에서 요청하며, 앞선 재시작 횟수로 미루지 않는다. 3회 후 영구 중단도 없다. 감시 조건이 해소되거나 OTA 보호 구간에 들어가면 재시작하지 않는다.
 - 재시작 횟수는 진단용이다. RTC RAM에 보관하고 uint32 최댓값에서 포화시킨다. 구형 정책과 구별하는 magic `GWR3`를 사용한다. 전원 재인가나 복구 요청이 아닌 정상 소프트웨어 재부팅은 횟수를 초기화한다. 링크가 실제 연결된 상태에서 worker sequence가 계속 진행해야 10분 후 횟수를 초기화한다. AP 미접속 상태의 실패한 재접속 시도만으로는 초기화하지 않는다.
-- **메인 루프의 실제 정지는 별도다.** main watchdog 등록은 재시작 횟수와 무관하게 유지하며, 루프가 실제 멎으면 60초 TWDT가 작동한다. 독립적인 전원/하드웨어 watchdog을 무력화하지 않는다.
+- **메인 루프의 실제 정지는 별도다.** main watchdog 등록은 재시작 횟수와 무관하게 유지하며, 루프가 실제 멎으면 15초 TWDT가 작동한다. 독립적인 전원/하드웨어 watchdog을 무력화하지 않는다.
 - TTGO 최신 OTA는 기존 SecureOTA와 고정 태그의 `version.txt`, `update.bin`, `update.sig`를 사용한다. 최신 업데이트에 `ota.txt/ota.sig`나 버전별 archive를 새로 요구하지 않는다. 기존 skip/success 처리와 Beetle → TTGO 순서를 유지한다.
 - 명시적으로 버전을 지정한 OTA는 원래의 `IoTGloveOtaClient::checkPinned`를 그대로 사용한다. 지정 버전에서 원래 요구하던 서명 메타데이터·archive, 파티션 검증·rollback 정책은 변경하지 않는다. 공통 OTA 클라이언트에 추가했던 transport/progress hook과 새 기한은 제거했다.
 - 진행 hook이 없는 기존 OTA를 일반 HTTP 정체로 오판하지 않도록, **OTA 실행 및 완료 확인 콜백 중에는 새 worker 정체 감시를 적용하지 않는다.** skip/실패로 반환하면 일반 통신 감시를 재개한다. 메인 루프 자체의 감시와 기존 OTA 코드 내부 처리는 유지한다. 따라서 이번 통신 복구 변경은 OTA 내부의 무한 정체까지 새로 해결한다고 주장하지 않는다.

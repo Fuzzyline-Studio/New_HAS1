@@ -250,7 +250,7 @@ own limit: 20 seconds for a normal HTTP worker stall, 10 seconds for an establis
 Wi-Fi link loss and 180 seconds if this boot never connected. Earlier restarts never
 lengthen these limits (the 300/900/1800-second backoff of v19-v26 is removed), and
 no attempt count stops recovery. Actual main-loop hangs keep their separate
-60-second TWDT.
+15-second TWDT.
 
 | Text subtype | v[0..3] |
 |---|---|

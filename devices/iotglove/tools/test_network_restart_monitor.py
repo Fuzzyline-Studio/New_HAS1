@@ -71,7 +71,7 @@ void reset(unsigned attempts){
 }
 int main(){
   reset(UINT32_MAX);armMainWatchdog();
-  assert(mainWatchdog && watchdogAdds==1 && watchdogTimeout==60000);
+  assert(mainWatchdog && watchdogAdds==1 && watchdogTimeout==15000);
   armMainWatchdog();assert(watchdogAdds==1);
   reset(1); // An earlier restart never delays the next one.
   tick(0,true);tick(1000);tick(10999);assert(!linkDownReported && !ESP.restarts);

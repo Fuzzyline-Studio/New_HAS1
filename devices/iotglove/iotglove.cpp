@@ -659,10 +659,11 @@ void handleConsoleCommand(char command, uint32_t now) {
 }
 void armMainWatchdog() {
   if (mainWatchdog) return;  // Retry history never disables actual main-loop hang detection.
-  // Preserve the configured idle subscribers; allow flash erases more time than
-  // the core's five-second default. HTTP worker stalls have their own 20s limit.
+  // Preserve the configured idle subscribers. The loop never blocks on the
+  // network (the worker does, under its own 20s limit), so a pass takes
+  // milliseconds; 15s leaves flash erases three times the core's 5s default.
   esp_task_wdt_config_t config{};
-  config.timeout_ms = 60000;
+  config.timeout_ms = 15000;
 #if CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0
   config.idle_core_mask |= 1U;
 #endif
