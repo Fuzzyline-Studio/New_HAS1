@@ -39,5 +39,27 @@ int main() {
   assert(!commandAllowed(e, s));
   strcpy(s.deviceName, e.deviceName);
   e.kind = static_cast<GameEvent::Kind>(255); assert(!commandAllowed(e, s));
+  // Loop is the periodic request; ReceiveMine only without a snapshot, when forced,
+  // flagged, or after 5 s for every role, including Ghost. The server flags each
+  // automatic charge now, so the former Ghost-only 1 s refresh must not return.
+  assert(fullRefreshDue(false, false, false, 100, 1100));
+  assert(fullRefreshDue(true, true, false, 100, 1100));
+  assert(fullRefreshDue(true, false, true, 100, 1100));
+  assert(!fullRefreshDue(true, false, false, 100, 1100));
+  assert(!fullRefreshDue(true, false, false, 100, 5099));
+  assert(fullRefreshDue(true, false, false, 100, 5100));
+  assert(!fullRefreshDue(true, false, false, UINT32_MAX - 99U, 900U));
+  assert(!fullRefreshDue(true, false, false, UINT32_MAX - 99U, 4899U));
+  assert(fullRefreshDue(true, false, false, UINT32_MAX - 99U, 4900U));
+  assert(fullRefreshDue(false, false, false, UINT32_MAX - 99U, 900U));
+  assert(fullRefreshDue(true, true, false, UINT32_MAX - 99U, 900U));
+  assert(fullRefreshDue(true, false, true, UINT32_MAX - 99U, 900U));
+  // Bounded wrap-safe deadlines for the post-button quiet window and event gate.
+  assert(!pendingUntil(0, 0, 1000) && pendingUntil(1, 0, 1000) && pendingUntil(1000, 0, 1000));
+  assert(!pendingUntil(1001, 0, 1000) && !pendingUntil(500, 501, 1000));
+  assert(pendingUntil(299, UINT32_MAX - 100U, 1000) && !pendingUntil(299, 299, 1000));
+  assert(!pendingUntil(0, UINT32_MAX / 2U, 1000) && !pendingUntil(0, UINT32_MAX / 2U + 2U, 1000));
+  e.notBeforeMs = 400;
+  assert(!eventDue(e, 0) && !eventDue(e, 399) && eventDue(e, 400) && eventDue(e, 400 + UINT32_MAX / 2U));
   puts("PASS: count-only commands, authoritative ghost role and session/freshness gates");
 }

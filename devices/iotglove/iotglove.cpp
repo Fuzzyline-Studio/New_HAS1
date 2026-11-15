@@ -294,8 +294,8 @@ void printDiagnostics(uint32_t now) {
       sensorChipRaw(), sensorButtonRaw(),
       sensorChipPresent(), sensorButtonDown(), game.chipPresent());
   const ServerSnapshot& server = game.server();
-  remoteConsoleLogf("[game] role=%s synchronized=%u life_chip=%ld captures_allowed=%u count=%u server_count=%u sacrificed=%u open=%u device_state=%s\n",
-      roleName(server.role), game.synchronized(), (long)server.lifeChip, server.capturesAllowed,
+  remoteConsoleLogf("[game] role=%s synchronized=%u life_chip=%ld count=%u server_count=%u sacrificed=%u open=%u device_state=%s\n",
+      roleName(server.role), game.synchronized(), (long)server.lifeChip,
       game.count(), server.revivalCount, server.sacrificed, server.open, deviceStateName(server.deviceState));
   // feedback() consumes event haptics. Diagnostics only read the last render.
   remoteConsoleLogf("[outputs] cache_valid=%u red=%u green=%u blue=%u lit=%u motor=%u motor_duty=%u brightness8=%u motor_age_ms=%s\n",
@@ -471,8 +471,13 @@ void pollNetwork(uint32_t now) {
     lastSnapshotRequest = now;
     networkRequestSnapshot();
   }
+}
+
+void submitGameEvent(uint32_t now) {
+  if (kTraining || !networkReady || feedbackEngine.foundPending(now)) return;
   GameEvent event;
-  if (!inFlight && !otaRequests.hasActive() && serverFresh(now) && game.peekEvent(event) && networkSubmit(event)) {
+  if (game.peekEvent(event) && eventDue(event, now) && !inFlight &&
+      !otaRequests.hasActive() && serverFresh(now) && networkSubmit(event)) {
     blackBoxButtonCommand(event,0);
     inFlight = event.sequence;
     game.consumeEvent();
@@ -561,8 +566,10 @@ void reportLocation(uint32_t now) {
   if (kTraining || !networkReady) return;
   const bool valid = peer.locationFresh(now) && desiredScan;
   const char* room = valid ? peer.room(now) : "";
+  // Immediately on change. The server recomputes vibe and tagger audio only on
+  // a location Send, so an unchanged room is still repeated at a slow keepalive.
   if (!locationReported || valid != lastLocationValid || strcmp(room, lastRoom) != 0 ||
-      uint32_t(now - lastLocationReport) >= 2000U) {
+      uint32_t(now - lastLocationReport) >= 5000U) {
     networkReportLocation(room);  // Empty clears stale location, never "unknown".
     strncpy(lastRoom, room, sizeof(lastRoom) - 1);
     lastLocationValid = valid;
@@ -602,6 +609,10 @@ void render(uint32_t now) {
   // FeedbackEngine consumes Academy server vibe values without playing them,
   // preventing an unchanged command from replaying after Academy ends.
   Outputs out = feedbackEngine.update(state, game.server().vibe, fresh, now, otaBusy() || resetHigh);
+  // Publish before motor ON, even when another button command is still queued.
+  // Only actual playback renews this deadline; old events never overwrite it.
+  if (!kTraining && networkReady && feedbackEngine.foundPending(now))
+    networkQuietUntil(feedbackEngine.foundUntilMs());
   if (otaBusy() || resetHigh) out.motor = false;
   // out.motor stays the ON/OFF request for logs and diagnostics; the PWM duty
   // only shapes how an ON request starts. OFF always writes 0 immediately.
@@ -821,6 +832,8 @@ void gloveLoop() {
   reportLocation(now);
   sampleBattery(now);
   render(now);
+  // Admit commands after this loop's input and haptics, including motor OFF.
+  submitGameEvent(now);
   flushDiagnostics();
   remoteConsolePoll();
   blackBoxLoop(millis(),int(game.server().phase),int(game.server().role),int(game.server().deviceState),

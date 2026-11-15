@@ -18,6 +18,8 @@ bool networkPoll(ServerSnapshot& snapshot);
 bool networkPollResult(GameResult& result);
 bool networkSubmit(const GameEvent& event);
 void networkRequestSnapshot();
+// Hold new worker requests until untilMs (bounded by kNetworkQuietMaxMs).
+void networkQuietUntil(uint32_t untilMs);
 // Latest debounced physical state; absolute reporting does not require a game phase.
 void networkReportChip(bool present);
 void networkReportLocation(const char* room);

@@ -32,7 +32,6 @@ struct ServerSnapshot {
   uint32_t stepSeconds = 0;
   bool sacrificed = false;
   bool open = false;
-  bool capturesAllowed = false;
   uint8_t vibe = 0;
   int32_t lifeChip = 0;
   // Raw 0..255, already converted by the network task at parse time.
@@ -64,6 +63,7 @@ struct GameEvent {
   char session[40] = {};
   char deviceName[24] = {};
   uint8_t value = 0;
+  uint32_t notBeforeMs = 0;  // Not submitted to the network worker before this millis().
 };
 
 struct Feedback {
@@ -125,9 +125,7 @@ class GameModel {
   size_t head_ = 0;
   size_t size_ = 0;
   uint32_t sequence_ = 0;
-  uint32_t stepStart_ = 0;
   uint32_t trainingStart_ = 0;
-  uint32_t intervalMs_ = 0;
   uint8_t count_ = 0;
   uint8_t observedCount_ = 0;
   bool chipPresent_ = false;

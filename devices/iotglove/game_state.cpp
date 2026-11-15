@@ -1,9 +1,15 @@
 #include "game_state.h"
+#include "feedback_config.h"
 #include "state_policy.h"
 
 #include <string.h>
 
 namespace iotglove {
+namespace {
+// A button command reaches the network only after its Found pattern has played.
+const uint32_t kFoundMs = feedback_config::schedule(feedback_config::Settings{}.onFound,
+                                                    feedback_config::Settings{}).total;
+}  // namespace
 
 void DebouncedInput::begin(bool level, uint32_t now) {
   stable_ = candidate_ = level;
@@ -28,7 +34,7 @@ void GameModel::resetQueue() {
 void GameModel::begin(bool chipPresent, uint32_t now) {
   chipPresent_ = chipPresent;
   trainingGhost_ = !chipPresent;  // A missing chip at boot must not show green.
-  trainingStart_ = stepStart_ = now;
+  trainingStart_ = now;
   count_ = 0;
   haveServer_ = needsSync_ = overflow_ = false;
   haptic_ = Haptic::None;
@@ -108,7 +114,6 @@ void GameModel::applyServer(const ServerSnapshot& snapshot, uint32_t now) {
     hapticPressId_ = 0;
     needsSync_ = overflow_ = false;
   }
-  const uint32_t nextInterval = snapshot.stepSeconds <= 86400U ? snapshot.stepSeconds * 1000U : 0;
   const uint8_t receivedCount = snapshot.revivalCount > 4 ? 4 : snapshot.revivalCount;
   if (snapshot.phase == Phase::Academy) {
     const bool startPlayer = snapshot.deviceState == DeviceState::Player &&
@@ -125,19 +130,17 @@ void GameModel::applyServer(const ServerSnapshot& snapshot, uint32_t now) {
     }
     return;
   }
-  // Repeated snapshots do not reset a partly charged step. Remote changes and
-  // interval changes deliberately restart only the current step, not the count.
+  // The server charges the count. A pending button write keeps its local value
+  // until read back; older reads cannot roll it back, later charges are followed.
   const bool countAcknowledged = countPending_ && receivedCount == count_;
   if (newSession || phaseChanged || controlChanged || roleChanged || recovering ||
-      nextInterval != intervalMs_ || (receivedCount != observedCount_ && !countPending_)) {
+      (receivedCount != observedCount_ && !countPending_)) {
     count_ = receivedCount;
     countPending_ = false;
-    stepStart_ = now;
   } else if (countAcknowledged) {
     countPending_ = false;
   }
   observedCount_ = receivedCount;
-  intervalMs_ = nextInterval;
   server_ = snapshot;
   haveServer_ = true;
 }
@@ -169,10 +172,11 @@ ButtonDecision GameModel::buttonPressed(uint32_t now, uint32_t pressId, bool tra
   }
   if (!synchronized()) return {ButtonDisposition::Unsynchronized, 0};
   if (!activeGhost()) return {ButtonDisposition::NotGhost, 0};
-  if (emit(GameEvent::Kind::SetCount, 0, pressId, trace)) {
-    count_ = 0;
+  // 1 is the server's minimum count; writing it restarts the server's charge timer.
+  if (emit(GameEvent::Kind::SetCount, 1, pressId, trace)) {
+    queue_[(head_ + size_ - 1) % kCapacity].notBeforeMs = now + kFoundMs;
+    count_ = 1;
     countPending_ = true;
-    stepStart_ = now;
     haptic_ = Haptic::Found;
     hapticPressId_ = pressId;
     return {ButtonDisposition::Queued, sequence_};
@@ -188,19 +192,7 @@ void GameModel::tick(uint32_t now) {
         uint32_t(now - trainingStart_) / 3000U)) : 4;
     return;
   }
-  if (!synchronized() || !activeGhost() || !intervalMs_) return;
-  // Conservative pending-capture policy: start counting after capture, but cap
-  // at 3 until altar confirmation. No life-device permission before sacrifice.
-  const uint8_t cap = server_.sacrificed ? 4 : 3;
-  if (count_ < cap && uint32_t(now - stepStart_) >= intervalMs_) {
-    const uint32_t steps = uint32_t(now - stepStart_) / intervalMs_;
-    const uint8_t next = steps >= uint32_t(cap - count_) ? cap : uint8_t(count_ + steps);
-    if (emit(GameEvent::Kind::SetCount, next)) {
-      count_ = next;
-      countPending_ = true;
-      stepStart_ += steps * intervalMs_;
-    }
-  }
+  // Origin: the server charges revival_count; the display follows its snapshots.
 }
 
 bool GameModel::canUseLifeDevice() const {
