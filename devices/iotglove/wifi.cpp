@@ -107,9 +107,6 @@ void publishDiagnostics() {
   const bool connected = linkUp.load();
   if (connected) lastRssi.store(clampRssi(WiFi.RSSI()));
   portENTER_CRITICAL(&diagnosticsMux);
-  diagnostics.wifiConnected = connected;
-  diagnostics.wifiWasUp = wifiWasUp;
-  diagnostics.wifiDownSinceMs = wifiDownSinceMs;
   diagnostics.wifiConnectFailures = connectFailures;
   diagnostics.wifiLossCount = lossCount.load();
   diagnostics.wifiLastLossAtMs = lossAtMs.load();
@@ -647,9 +644,9 @@ bool networkDiagnostics(NetworkDiagnostics& out) {
   portENTER_CRITICAL(&diagnosticsMux);
   out = diagnostics;
   portEXIT_CRITICAL(&diagnosticsMux);
-  // The worker publishes at most once a second and not while it is inside a
-  // request, so its copy can still read down through the first cycle after a
-  // reconnect. The main loop's outage clock needs the link as it is now.
+  // Read live, not from the published copy: the worker publishes at most once
+  // a second and not while it is inside a request, which would keep the link
+  // reading down through the first cycle after a reconnect.
   out.wifiConnected = linkUp.load();
   return true;
 }

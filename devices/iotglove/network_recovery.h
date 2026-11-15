@@ -14,9 +14,7 @@ struct NetworkDiagnostics {
   uint8_t lastHttpError = 0, lastHttpPhase = 0;
   uint16_t wifiDisconnectReason = 0;
   // STA link itself, distinct from HTTP. The worker owns every field.
-  bool wifiConnected = false;        // associated to the fixed SSID
-  bool wifiWasUp = false;            // associated at least once since boot
-  uint32_t wifiDownSinceMs = 0;      // start of the current outage; boot time until first association
+  bool wifiConnected = false;        // associated to the fixed SSID; read live by networkDiagnostics()
   uint32_t wifiConnectFailures = 0;  // consecutive failed fixed-SSID attempts in this outage
   uint32_t wifiLossCount = 0;        // disconnects of an established link since boot
   uint32_t wifiLastLossAtMs = 0;     // uptime of the latest such disconnect event
@@ -33,9 +31,9 @@ constexpr uint32_t kWifiLostRestartMs = 10000;
 constexpr uint32_t kWifiNeverUpRestartMs = 180000;
 
 // The main loop times the outage itself, from the moment it first sees the
-// link read down. The worker's wifiDownSinceMs is written by another task at a
-// different moment than the link state, so pairing the two can read as an
-// outage as old as the previous one; the restart decision never reads it.
+// link read down. The worker keeps its own outage start for its logs, but it
+// is written at a different moment than the link state, and pairing the two
+// read as an outage as old as the previous one, so it is no longer shared.
 class LinkOutageClock {
  public:
   void observe(bool connected, uint32_t now) {

@@ -22,7 +22,6 @@ HARNESS = r"""
 #include "network_restart.h"
 #include "link_loss.h"
 #include <cassert>
-#include <cstring>
 using namespace iotglove;
 using esp_err_t = int;
 constexpr int ESP_OK=0, ESP_ERR_INVALID_STATE=1;
@@ -63,7 +62,7 @@ void motorOff(){assert(!ESP.restarts);++motorOffs;} // Motor must be cut before 
 void tick(uint32_t at,bool connected=false){
   nowMs=at;sample.phase=NetworkPhase::Backoff;sample.sequence=at;
   sample.startedAtMs=sample.progressAtMs=at;sample.deadlineMs=20000;
-  sample.wifiWasUp=true;sample.wifiConnected=connected;monitorNetwork();
+  sample.wifiConnected=connected;monitorNetwork();
 }
 void reset(unsigned attempts){
   networkRestartHistory={NetworkRestartPolicy::kMagic,attempts,false};
@@ -88,8 +87,8 @@ int main(){
   reset(1);sample.phase=NetworkPhase::Http;sample.deadlineMs=20000;sample.wifiConnected=true;
   nowMs=19999;monitorNetwork();assert(!stallReported && !ESP.restarts);
   nowMs=20000;monitorNetwork();assert(stallReported && ESP.restarts==1 && restartReason==2 && motorOffs==1);
-  // The worker's outage start is stale (boot): the main loop times it itself.
-  reset(0);tick(600000,true);sample.wifiDownSinceMs=0;
+  // Up for ten minutes, then down: counted from the first down observation.
+  reset(0);tick(600000,true);
   tick(600100);tick(610099);assert(!ESP.restarts);
   tick(610100);assert(ESP.restarts==1 && restartReason==3);
   reset(0);tick(0);tick(179999);assert(!ESP.restarts); // Never associated this boot.

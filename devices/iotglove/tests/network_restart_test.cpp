@@ -4,12 +4,10 @@
 #include <cstdio>
 #include <initializer_list>
 using namespace iotglove;
-// The worker's own outage fields are deliberately left stale (boot time, was
-// up): the policy must time the outage from what it observes itself.
 static NetworkDiagnostics offline(uint32_t now) {
   NetworkDiagnostics d;
   d.phase=NetworkPhase::Backoff; d.sequence=now; d.startedAtMs=now; d.progressAtMs=now;
-  d.deadlineMs=20000; d.wifiWasUp=true; d.wifiDownSinceMs=0;
+  d.deadlineMs=20000;
   return d;
 }
 static NetworkDiagnostics online(uint32_t now) {
@@ -64,8 +62,8 @@ static void thresholdsIgnoreHistory() {
   }
 }
 static void ownOutageClock() {
-  // Up for ten minutes, then down: the worker still reports its outage start as
-  // boot (0). The limit is counted from the main loop's first down observation.
+  // Up for ten minutes, then down: the limit is counted from the first down
+  // observation, not from boot or an earlier outage.
   NetworkRestartHistory h{NetworkRestartPolicy::kMagic,0,false}; NetworkRestartPolicy policy;
   for (uint32_t now=0;now<=600000;now+=1000) assert(!policy.poll(h,online(now),now).restart);
   assert(!policy.poll(h,offline(600100),600100).restart);
@@ -124,5 +122,5 @@ static void rollover() {
 int main() {
   retainedCountAndSaturation(); thresholdsIgnoreHistory(); ownOutageClock();
   recoveryOtaAndCause(); stableMeansConnectedAndProgressing(); rollover();
-  puts("PASS: restart due at its own limit whatever the count, own outage clock ignores stale worker time, >255/saturation, recovery/OTA guard, true link health and wrap");
+  puts("PASS: restart due at its own limit whatever the count, outage counted from the first down observation, >255/saturation, recovery/OTA guard, true link health and wrap");
 }
