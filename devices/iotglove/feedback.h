@@ -19,6 +19,13 @@ class FeedbackEngine {
   explicit FeedbackEngine(const feedback_config::Settings& settings = feedback_config::Settings{})
       : settings_(settings) {}
 
+  // The latest actually started Found pattern owns the quiet window, including
+  // its OFF gap. Queue-head command deadlines cannot shorten a later pattern.
+  bool foundPending(uint32_t now) const {
+    return found_ && uint32_t(now - patternStart_) < pattern_.total;
+  }
+  uint32_t foundUntilMs() const { return patternStart_ + pattern_.total; }
+
   Outputs update(const Feedback& state, uint8_t vibe, bool locationFresh, uint32_t now,
                  bool suppressed = false) {
     Outputs out;
@@ -95,6 +102,7 @@ class FeedbackEngine {
       if (state.haptic != Haptic::None) {
         const auto choice = state.haptic == Haptic::Removed ? settings_.onRemoved : settings_.onFound;
         start(choice, Source::Event, now);
+        found_ = state.haptic == Haptic::Found && pattern_.total;
         patternPressId_ = state.hapticPressId;
       }
       known_ = true;
@@ -132,6 +140,7 @@ class FeedbackEngine {
     if (state.haptic != Haptic::None) {
       const auto choice = state.haptic == Haptic::Removed ? settings_.onRemoved : settings_.onFound;
       start(choice, Source::Event, now);
+      found_ = state.haptic == Haptic::Found && pattern_.total;
       patternPressId_ = state.hapticPressId;
       // A capture's later server acknowledgement must not repeat its vibration.
       if (state.haptic == Haptic::Removed && pattern_.total && state.role == Role::Player &&
@@ -165,6 +174,7 @@ class FeedbackEngine {
   feedback_config::Schedule pattern_;
   uint32_t patternStart_ = 0;
   uint32_t patternPressId_ = 0;
+  bool found_ = false;
   uint32_t blinkStart_ = 0;
   Source source_ = Source::None;
   bool known_ = false;
@@ -187,10 +197,11 @@ class FeedbackEngine {
     out.motorSource = static_cast<MotorSource>(source_);
     out.motorPressId = source_ == Source::Event ? patternPressId_ : 0;
   }
-  void cancel() { pattern_ = feedback_config::Schedule{}; source_ = Source::None; patternPressId_ = 0; }
+  void cancel() { pattern_ = feedback_config::Schedule{}; source_ = Source::None; patternPressId_ = 0; found_ = false; }
   void start(const feedback_config::Schedule& schedule, Source source, uint32_t now) {
     pattern_ = schedule;
     patternPressId_ = 0;
+    found_ = false;
     source_ = pattern_.total ? source : Source::None;
     patternStart_ = now;
   }

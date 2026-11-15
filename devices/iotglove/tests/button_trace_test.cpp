@@ -1,5 +1,6 @@
 #include "../button_trace.h"
 #include "../feedback.h"
+#include "../network_policy.h"
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
@@ -7,7 +8,7 @@ using namespace iotglove;
 static ServerSnapshot server(Role role = Role::Ghost) {
   ServerSnapshot s;
   s.valid = true; s.phase = Phase::Active; s.role = role;
-  s.deviceState = DeviceState::Activate; s.capturesAllowed = true;
+  s.deviceState = DeviceState::Activate;
   s.stepSeconds = 3;
   strcpy(s.session, "game:1"); strcpy(s.deviceName, "G1P1");
   return s;
@@ -24,14 +25,12 @@ static void decisionsAndIdentity() {
   auto d = game.buttonPressed(7, 14, true);
   assert(d.disposition == ButtonDisposition::Queued && d.sequence != 0);
   GameEvent e; assert(game.peekEvent(e));
-  assert(e.sequence == d.sequence && e.pressId == 14 && e.traceButton && e.value == 0);
+  assert(e.sequence == d.sequence && e.pressId == 14 && e.traceButton && e.value == 1);
   const auto f = game.feedback();
   assert(f.haptic == Haptic::Found && f.hapticPressId == 14);
   assert(game.feedback().hapticPressId == 0);
   game.consumeEvent();
-  game.tick(3007); assert(game.peekEvent(e));
-  assert(e.value == 1 && e.pressId == 0 && !e.traceButton); // Timer is not a button.
-  game.consumeEvent();
+  game.tick(3007); assert(!game.peekEvent(e)); // The server charges; no timer events.
   for (unsigned i = 0; i < 12; ++i)
     assert(game.buttonPressed(4000+i, 20+i, false).disposition == ButtonDisposition::Queued);
   assert(game.buttonPressed(5000, 99, true).disposition == ButtonDisposition::QueueFull);
@@ -117,7 +116,92 @@ static void observationalParity() {
     }
   }
 }
+static void foundQuietQueueIntegration(uint32_t base, unsigned presses) {
+  GameModel game(Profile::Origin); game.begin(false, base); game.applyServer(server(), base);
+  FeedbackEngine engine; engine.update(game.feedback(), 0, false, base);
+  uint32_t workerQuietUntil = base;
+  unsigned submitted = 0;
+  const uint32_t finish = 100U + (presses - 1U) * 300U + 400U;
+  for (uint32_t elapsed = 1; elapsed <= finish + 20U; ++elapsed) {
+    const uint32_t now = base + elapsed;
+    // Production order: input, render/publish quiet, then command admission.
+    if (elapsed >= 100 && (elapsed - 100) % 300 == 0 && (elapsed - 100) / 300 < presses) {
+      const unsigned id = 1 + (elapsed - 100) / 300;
+      assert(game.buttonPressed(now, id, true).disposition == ButtonDisposition::Queued);
+    }
+    const auto out = engine.update(game.feedback(), 0, false, now);
+    if (engine.foundPending(now)) workerQuietUntil = engine.foundUntilMs();
+    GameEvent head;
+    if (game.peekEvent(head)) {
+      if (elapsed >= 500 && elapsed < finish) {
+        assert(eventDue(head, now)); // The oldest command is ready, but the latest pattern is not.
+        assert(head.pressId == 1 && engine.foundPending(now));
+      }
+      if (eventDue(head, now) && !engine.foundPending(now)) {
+        assert(!out.motor && !pendingUntil(workerQuietUntil, now, kNetworkQuietMaxMs));
+        assert(elapsed >= finish && head.pressId == ++submitted);
+        game.consumeEvent();
+      }
+    }
+    if (elapsed >= 100 && elapsed < finish) {
+      assert(engine.foundPending(now));
+      assert(pendingUntil(workerQuietUntil, now, kNetworkQuietMaxMs));
+      if (elapsed == 650 && presses >= 2) assert(out.motor && out.motorPressId == 2);
+    }
+  }
+  assert(submitted == presses && game.queuedEvents() == 0);
+  assert(!engine.foundPending(base + finish + 10000)); // No input: no indefinite quiet.
+}
+static void actualFoundPlaybackOwnsQuiet() {
+  GameModel game(Profile::Origin); game.begin(false, 0); game.applyServer(server(), 0);
+  FeedbackEngine engine;
+  assert(!engine.foundPending(UINT32_MAX)); // An unset pattern is never a wraparound deadline.
+  engine.update(game.feedback(), 0, false, 0);
+  game.buttonPressed(100, 1, true);
+  engine.update(game.feedback(), 0, false, 200); // Playback starts after the input timestamp.
+  GameEvent head; assert(game.peekEvent(head) && head.notBeforeMs == 500);
+  assert(engine.foundUntilMs() == 600);
+  assert(eventDue(head, 500) && engine.foundPending(500));
+  assert(!engine.foundPending(600));
+  game.buttonPressed(700, 2, true);
+  engine.update(game.feedback(), 10, false, 700); // Muted input never starts a Found window.
+  assert(!engine.foundPending(700));
+  game.buttonPressed(800, 3, true);
+  engine.update(game.feedback(), 0, false, 800, true); // OTA/reset suppression consumes the event.
+  assert(!engine.foundPending(800));
+  engine.update(game.feedback(), 0, false, 801);
+  assert(!engine.foundPending(801));
+  game.buttonPressed(900, 4, true);
+  engine.update(game.feedback(), 0, false, 900);
+  assert(engine.foundPending(900));
+  engine.update(game.feedback(), 0, false, 901, true);
+  assert(!engine.foundPending(901));
+  feedback_config::Settings off; off.onFound = feedback_config::Pattern::Off;
+  FeedbackEngine disabled(off);
+  game.buttonPressed(1000, 5, true);
+  disabled.update(game.feedback(), 0, false, 1000);
+  assert(!disabled.foundPending(1000));
+  // Local Training and Academy events still play without a network command.
+  const Profile profiles[] = {Profile::Training, Profile::Origin};
+  for (const auto profile : profiles) {
+    GameModel local(profile); local.begin(false, 0);
+    if (profile == Profile::Origin) {
+      auto s = server(Role::Neutral); s.phase = Phase::Academy; s.deviceState = DeviceState::Player;
+      local.applyServer(s, 0);
+    }
+    FeedbackEngine feedback; feedback.update(local.feedback(), 0, false, 0);
+    assert(local.buttonPressed(100).disposition == ButtonDisposition::LocalAccepted);
+    assert(feedback.update(local.feedback(), 0, false, 100).motor);
+    assert(feedback.foundPending(499) && !feedback.foundPending(500));
+    assert(local.queuedEvents() == 0);
+  }
+}
 int main() {
   decisionsAndIdentity(); boundedInputsAndDebounce(); realMotorEdgesAndSources(); observationalParity();
+  for (unsigned presses = 1; presses <= 3; ++presses) {
+    foundQuietQueueIntegration(0, presses);
+    foundQuietQueueIntegration(UINT32_MAX - 799U, presses); // Two presses end exactly at millis()==0.
+  }
+  actualFoundPlaybackOwnsQuiet();
   puts("PASS: button decisions, causal IDs, debounce, bounded chatter, full queue, complete motor pulses and gameplay parity");
 }

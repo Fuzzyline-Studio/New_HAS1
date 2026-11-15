@@ -9,7 +9,7 @@ using namespace iotglove;
 
 int main() {
   ServerSnapshot s;
-  s.valid = true; s.role = Role::Ghost; s.lifeChip = 1; s.capturesAllowed = true;
+  s.valid = true; s.role = Role::Ghost; s.lifeChip = 1;
   strcpy(s.session, "current"); strcpy(s.deviceName, "G1P1");
   GameEvent event; event.kind = GameEvent::Kind::SetCount;
   strcpy(event.session, s.session); strcpy(event.deviceName, s.deviceName);

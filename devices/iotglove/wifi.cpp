@@ -31,20 +31,21 @@ constexpr uint32_t kRetryMs = 5000;
 HAS2_Wifi wifi;
 QueueHandle_t snapshots, commands, results, locations, batteries, otaRequests;
 std::atomic<bool> forceSnapshot{false}, commandBusy{false};
+// Set by the main loop while the button's Found pattern plays; no new requests start.
+std::atomic<uint32_t> quietUntil{0};
 // 2 means no initial sensor sample yet; never retain an edge queue.
 std::atomic<uint8_t> physicalChip{2};
 ChipReportPolicy chipReport;
 std::atomic<NetworkOtaStatus> otaState{NetworkOtaStatus::Idle};
-struct Location { char room[32]; uint32_t sampledAt; };
+struct Location { char room[32]; };
 struct Battery { float volts; uint32_t sampledAt; };
 struct OtaRequest { uint32_t targetVersion = 0; char sourceCommand[40] = {}; };
 int version, partitionVersion;
-uint32_t bootId, generation = 0, connectionEpoch = 0;
+uint32_t bootId, generation = 0, connectionEpoch = 0, lastFullRefresh = 0;
 bool hadValid = false;
 ServerSnapshot latest;
 char lastDevice[24] = {};
 char lastDeviceState[64] = {};
-char taggerName[24] = {};
 char versionReportedTo[24] = {};
 bool resetLatched = false;
 NetworkRecoveryPolicy recovery;
@@ -52,7 +53,7 @@ portMUX_TYPE diagnosticsMux = portMUX_INITIALIZER_UNLOCKED;
 NetworkDiagnostics diagnostics;
 std::atomic<uint16_t> disconnectReason{0};
 bool otaOperation = false;
-int diagnosticHttpKind=0; // 0 unknown,1 own snapshot,2 peer read,3 send,4 chip report,5 management
+int diagnosticHttpKind=0; // 0 unknown,1 own snapshot,2 unused (was peer read),3 send,4 chip report,5 management
 // STA link bookkeeping. The Wi-Fi event task marks the first drop of an
 // established link so later reconnect-attempt events never overwrite the
 // original reason; the worker owns the outage timer and attempt counting.
@@ -273,9 +274,6 @@ bool decodeSnapshot(ServerSnapshot& out) {
     out.otaTtgoVersion = otaCommand.ttgo.version;
     out.otaBeetleVersion = otaCommand.beetle.version;
   }
-  out.capturesAllowed = false;
-  taggerName[0] = 0;
-  copyString(my["tagger_name"], taggerName, sizeof(taggerName));
   // The API has no game epoch. Use a local generation, invalidated on any loss
   // of synchronization or phase/device change. Never replay across a reconnect.
   const bool connectionChanged = !hadValid || strcmp(lastDevice, out.deviceName);
@@ -297,40 +295,15 @@ void publishInvalid() {
   xQueueOverwrite(snapshots, &latest);
 }
 
-bool refresh(bool primary = false) {
+bool refresh() {
   if (serverRequestsDeferred()) { publishInvalid(); return false; }
   ServerSnapshot fresh;
   const bool identified = readChipIdentity();
-  const auto primaryResult = wifi.LastHttpResult();
-  observeResponseBackoff(primaryResult);
+  observeResponseBackoff(wifi.LastHttpResult());
   const bool valid = identified && decodeSnapshot(fresh);
-  if (primary) {
-    blackBoxHttp(int(primaryResult.error),primaryResult.status,primaryResult.elapsedMs,valid);
-    recovery.observePrimary(millis(), primaryResult.error == HAS2HttpError::Transport, valid);
-    if (!valid) {
-      static uint32_t lastFailureLog = 0;
-      if (uint32_t(millis() - lastFailureLog) >= 15000) {
-        lastFailureLog = millis();
-        remoteConsoleLogf("[net] poll error=%u http=%d elapsed=%lu bytes=%lu failures=%lu rssi=%d\n",
-            static_cast<unsigned>(primaryResult.error), primaryResult.status,
-            (unsigned long)primaryResult.elapsedMs, (unsigned long)primaryResult.bytes,
-            (unsigned long)recovery.failures(), WiFi.RSSI());
-      }
-    }
-  }
   if (!valid) { publishInvalid(); return false; }
-  // The game can be activate while the tagger still waits for the altar.
-  // Resolve the configured tagger instead of inferring altar activation from phase.
-  diagnosticHttpKind=2;
-  if (!serverRequestsDeferred() && fresh.phase == Phase::Active && liveName(taggerName) && wifi.ReceiveChecked(taggerName)) {
-    const char* remoteName = tag["device_name"] | "";
-    const char* remoteRole = tag["role"] | "";
-    const char* remoteState = tag["device_state"] | "";
-    fresh.capturesAllowed = !strcmp(remoteName, taggerName) && !strcmp(remoteRole, "tagger") &&
-                            !strcmp(remoteState, "activate");
-  }
   fresh.receivedAtMs = millis();
-  latest = fresh; hadValid = true;
+  latest = fresh; hadValid = true; lastFullRefresh = millis();
   xQueueOverwrite(snapshots, &latest);
   return true;
 }
@@ -378,7 +351,8 @@ void reportChip() {
   if (!readChipIdentity()) { publishInvalid(); return; }
   observePhysicalChip();
   ChipReportPolicy::Request request;
-  if (!chipReport.begin(millis(), request)) return;
+  // ReceiveMine cleared any shift_machine flag; read the snapshot on the next cycle.
+  if (!chipReport.begin(millis(), request)) { forceSnapshot.store(true); return; }
   diagnosticHttpKind=4;
   if (!serverRequestsDeferred()) wifi.SetGloveChipChecked(request.device, request.present);
   const bool readBack = readChipIdentity();
@@ -398,10 +372,54 @@ void reportChip() {
 }
 
 bool checkedManagement() { diagnosticHttpKind=5;return wifi.LoopChecked(); }
-void checkManagement() {
-  if (serverRequestsDeferred() || !hadValid || !checkedManagement()) return;
-  long watchdog;
-  if (!number(shift_machine["watchdog"], 0, 1, watchdog)) return;
+
+// Loop is the periodic primary request: the server's liveness heartbeat and the
+// carrier of shift_machine, watchdog and brightness. ReceiveMine follows only when
+// due. `watchdog` is captured before later requests reuse the Loop document.
+bool pollServer(bool forced, long& watchdog) {
+  watchdog = -1;
+  if (serverRequestsDeferred()) { publishInvalid(); return false; }
+  bool valid = checkedManagement();
+  auto primaryResult = wifi.LastHttpResult();
+  observeResponseBackoff(primaryResult);
+  if (!valid) publishInvalid();
+  else {
+    long flag, brightness;
+    // Only an explicit 0 means unchanged; a missing or malformed flag re-reads.
+    const bool flagged = !number(shift_machine["shift_machine"], 0, 0, flag);
+    if (!number(shift_machine["watchdog"], 0, 1, watchdog)) watchdog = -1;
+    // Same mapping as decodeSnapshot; a same-cycle ReceiveMine below still wins.
+    if (number(shift_machine["brightness"], 1, 100, brightness))
+      latest.brightness = static_cast<uint8_t>(map(brightness, 1, 100, 1, 255));
+    if (fullRefreshDue(hadValid, forced, flagged, lastFullRefresh, millis())) {
+      if (serverRequestsDeferred()) { publishInvalid(); return false; }
+      // The cycle's outcome is then the snapshot read: a failed or semantically
+      // invalid ReceiveMine counts as the primary failure, as it did before.
+      valid = refresh();
+      primaryResult = wifi.LastHttpResult();
+    } else {
+      // Unchanged: keep the last ReceiveMine content fresh for the main loop.
+      latest.receivedAtMs = millis();
+      xQueueOverwrite(snapshots, &latest);
+    }
+  }
+  blackBoxHttp(int(primaryResult.error),primaryResult.status,primaryResult.elapsedMs,valid);
+  recovery.observePrimary(millis(), primaryResult.error == HAS2HttpError::Transport, valid);
+  if (!valid) {
+    static uint32_t lastFailureLog = 0;
+    if (uint32_t(millis() - lastFailureLog) >= 15000) {
+      lastFailureLog = millis();
+      remoteConsoleLogf("[net] poll error=%u http=%d elapsed=%lu bytes=%lu failures=%lu rssi=%d\n",
+          static_cast<unsigned>(primaryResult.error), primaryResult.status,
+          (unsigned long)primaryResult.elapsedMs, (unsigned long)primaryResult.bytes,
+          (unsigned long)recovery.failures(), WiFi.RSSI());
+    }
+  }
+  return valid;
+}
+
+void checkManagement(long watchdog) {
+  if (serverRequestsDeferred() || !hadValid || watchdog < 0) return;
   if (!watchdog) { resetLatched = false; return; }
   if (!resetLatched && latest.phase != Phase::Active && otaState.load() != NetworkOtaStatus::Running &&
       send("watchdog", "0") && !serverRequestsDeferred() && checkedManagement() &&
@@ -547,6 +565,8 @@ void worker(void*) {
       waitWorker(100);
       continue;
     }
+    // Let the button's Found pattern finish before any new request starts.
+    if (pendingUntil(quietUntil.load(), millis(), kNetworkQuietMaxMs)) { waitWorker(10); continue; }
     if (otaState.load() == NetworkOtaStatus::Queued) {
       OtaRequest request;
       if (xQueueReceive(otaRequests, &request, 0) == pdTRUE) performOta(request);
@@ -554,11 +574,13 @@ void worker(void*) {
     }
     GameEvent event;
     if (xQueueReceive(commands, &event, 0) == pdTRUE) execute(event);
-    if (forceSnapshot.exchange(false) || uint32_t(millis() - lastPoll) >= kPollMs) {
-      if (refresh(true)) {
+    const bool forced = forceSnapshot.exchange(false);
+    if (forced || uint32_t(millis() - lastPoll) >= kPollMs) {
+      long watchdog;
+      if (pollServer(forced, watchdog)) {
         if (strcmp(versionReportedTo, latest.deviceName) && send("esp_version", String(version)))
           strcpy(versionReportedTo, latest.deviceName);
-        checkManagement();
+        checkManagement(watchdog);
       }
       lastPoll = millis();
     }
@@ -581,12 +603,9 @@ void worker(void*) {
     }
     if (recovery.deferred(millis())) continue;
     reportChip();
-    if (hadValid && xQueueReceive(locations, &location, 0) == pdTRUE) {
-      // A lost/expired beacon clears the server field rather than leaving a
-      // permanent room. Empty is understood by computeVibe as no location.
-      const bool fresh = uint32_t(millis() - location.sampledAt) < kLocationFreshMs;
-      send("location", fresh ? location.room : "");
-    }
+    // The queue holds the main loop's latest report, which is "" (no location for
+    // computeVibe) once the beacon is stale; its keepalive repeats a lost send.
+    if (hadValid && xQueueReceive(locations, &location, 0) == pdTRUE) send("location", location.room);
     if (hadValid && xQueueReceive(batteries, &battery, 0) == pdTRUE &&
         uint32_t(millis() - battery.sampledAt) < 60000) {
       send("battery_remaining", String(battery.volts, 2));
@@ -644,10 +663,11 @@ bool networkSubmit(const GameEvent& event) {
   commandBusy.store(false); return false;
 }
 void networkRequestSnapshot() { forceSnapshot.store(true); }
+void networkQuietUntil(uint32_t untilMs) { quietUntil.store(untilMs); }
 void networkReportChip(bool present) { physicalChip.store(present ? 1 : 0); }
 void networkReportLocation(const char* room) {
   if (!locations || !room || strlen(room) >= sizeof(Location::room)) return;
-  Location sample{}; strcpy(sample.room, room); sample.sampledAt = millis();
+  Location sample{}; strcpy(sample.room, room);
   xQueueOverwrite(locations, &sample);
 }
 void networkReportBattery(float volts) {

@@ -149,7 +149,7 @@ static void onlyServerRoleTransitionsSignal() {
   game.begin(true, 0);
   ServerSnapshot s;
   s.valid = true; s.phase = Phase::Active; s.deviceState = DeviceState::Activate;
-  s.role = Role::Player; s.stepSeconds = 3; s.capturesAllowed = true;
+  s.role = Role::Player; s.stepSeconds = 3;
   strcpy(s.session, "run1"); strcpy(s.deviceName, "G1P1");
   game.applyServer(s, 0);
   assert(!engine.update(game.feedback(), 0, false, 0).motor);

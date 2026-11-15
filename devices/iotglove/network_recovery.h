@@ -52,7 +52,7 @@ inline bool networkWorkerStalled(const NetworkDiagnostics& d, uint32_t now) {
       (d.idleDeadlineMs && uint32_t(now - d.progressAtMs) >= d.idleDeadlineMs);
 }
 
-// Owned by the network worker. Only its periodic ReceiveMine observation is
+// Owned by the network worker. Only its periodic poll observation (Loop, then ReceiveMine when read) is
 // supplied here: side requests must neither inflate nor conceal poll failures.
 class NetworkRecoveryPolicy {
  public:

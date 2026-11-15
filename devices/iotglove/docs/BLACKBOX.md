@@ -46,7 +46,7 @@ link events are recorded as they occur. Producers enqueue fixed records only.
 |---|---|
 | `device.boot` | reset reason, firmware, partition version, training flag |
 | `game` | phase, role, device state, reserved; `-1` means invalid/unknown |
-| `primary.result/failure` | HAS2 HTTP error, HTTP status, elapsed ms, decoded snapshot valid |
+| `primary.result/failure` | HAS2 HTTP error, HTTP status, elapsed ms, poll valid (`Loop` ok; decoded snapshot valid when `ReceiveMine` was read that cycle) |
 | `primary.counts` | primary polls, invalid snapshots, maximum HTTP ms, reserved |
 | `network.begin` | worker phase, reserved fields; sampled start, not every request |
 | `network.summary` | phase, operation age ms, progress age ms, operation sequence |
@@ -135,7 +135,7 @@ boot and observed boot: a reset request is never treated as a confirmed reset ca
 
 All existing HTTP completion hooks now capture failure/error change/recovery by
 request kind; a side-lane success does not reset a different kind's failure gate.
-Types are 0 unknown, 1 own snapshot, 2 peer read, 3 send, 4 chip report, 5 management.
+Types are 0 unknown, 1 own snapshot, 2 unused (was peer read), 3 send, 4 chip report, 5 management.
 `http.failure`/`http.recovered`: operation ID, error, HTTP status, elapsed ms.
 `http.phase.bytes.errno`: same ID, last result phase, body bytes, unavailable errno
 (`INT32_MIN`). `http.ok_age.retry.kind`: same ID, last success age, Retry-After ms,

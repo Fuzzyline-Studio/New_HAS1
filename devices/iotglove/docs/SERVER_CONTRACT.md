@@ -27,6 +27,14 @@
 
 **적용 순서:** 서버 변경 배포 → 등록 장치 API 확인 → 새 글러브 펌웨어 Release/OTA. 저장소 코드 변경이나 컴파일은 운영 서버 적용을 뜻하지 않는다. 이번 범위는 물리 칩 보고와 글러브 역할 판정이며, 아래에 남긴 전역 생명 추적·제단 봉헌의 모든 기획 차이를 해결한 것은 아니다.
 
+## 2026-11-16: 자동 충전 알림과 공통 5초 안전 조회
+
+[서버 PR #92](https://github.com/Fuzzyline-Studio/fuzzyline-core/pull/92)의 변경이 운영 서버에 배포된 것을 전제로 한다. 자동 충전으로 `revival_count` 저장이 실제 성공한 글러브에 서버가 `shift_machine=2`를 설정한다. PR의 생성·검토 완료만으로 병합이나 운영 배포가 완료된 것은 아니다.
+
+글러브는 약 1초마다 `Loop`를 보내고, 변경 flag가 있으면 같은 회차에 `ReceiveMine`으로 새 카운트를 읽는다. flag가 없으면 유령을 포함한 모든 역할이 마지막 성공한 전체 읽기부터 5초마다 안전 재조회한다. flag 누락·형식 오류, 유효 스냅샷 없음, 강제 재조회는 5초를 기다리지 않는다. 실패·무효 응답은 스냅샷을 무효화하여 다음 폴링 회차에 다시 조회하며 기존 백오프·재접속 정책을 유지한다. 아직 자동 충전 알림이 없는 서버에서는 충전 표시가 5초 안전 조회까지 늦어질 수 있으므로 서버 변경을 먼저 적용한다.
+
+Origin 소생 쿨타임·카운트는 서버가 계산한다. 글러브는 확인한 카운트를 4개의 LED 칸으로 표시하며, 자체 충전 타이머나 로컬 카운트 증가는 사용하지 않는다. 발각 버튼은 1을 보고한 뒤 서버의 충전 결과를 따르고, Academy·독립 훈련의 로컬 타이머는 기존대로 유지한다.
+
 ## 기존 API 조사 기록 — 2026-09-16
 
 아래는 신규 절대값 API 도입 전 조사 기록이다. 증감·역할 직접 전송에 관한 설명은 구형 경로의 계약이며, 새 글러브 구현은 위 확정 계약을 따른다.
@@ -40,9 +48,9 @@ Node의 `GET /api/esp`와 호환 별칭 `GET /has2.php`를 사용한다. 서버�
 | 작업 | 요청 내용 | 의미와 주의 |
 | --- | --- | --- |
 | 자기 장치 조회 | `request=ReceiveMine&table=device&mac=<MAC>` | 등록 MAC으로 장치와 그룹 상태를 조회한다. 미등록이면 HTTP 200 + `{}`도 가능 |
-| 변경 폴링 | `request=Loop&table=device&mac=<MAC>` | `shift_machine`, watchdog 등 확인. 최초/재접속 시 전체 동기화 유도 |
+| 변경 폴링 | `request=Loop&table=device&mac=<MAC>` | 글러브의 1초 주기 주 요청(서버 생존 heartbeat). `shift_machine`≠0이면 `ReceiveMine` 전체 재조회, watchdog·brightness도 이 응답에서 읽음. 자동 충전 알림 서버 배포를 전제로 flag가 0이면 모든 역할이 5초마다 안전 재조회 |
 | 상태/측정 보고 | `request=Send&table=device&key=<자기 장치>&column=<필드>&value=<값>` | 필드마다 SET/증감/별도 로직이 달라 일괄 취급 금지 |
-| 다른 장치 조회 | `request=Receive&table=device&key=<대상>` | 역할 등 조회. 요청 대상과 응답을 검증 |
+| 다른 장치 조회 | `request=Receive&table=device&key=<대상>` | 역할 등 조회. 요청 대상과 응답을 검증. 글러브는 주기적으로 호출하지 않음 |
 | 장치 사건 | `request=Situation&table=<사건>&key=<주체>&value=<대상>` | 사건별 주체/대상이 다르며 HTTP 200이 게임 처리 성공을 뜻하지 않음 |
 
 본게임 `device_type=iotglove`, `G1/G2`는 `iotglove_g1/g2`로 해석된다. 훈련소는 `training_device`/`training_iotglove`로 별도 해석한다. `ReceiveMine`의 필드는 숫자도 문자열로 반환되며 null은 null이다. 응답 전 `shift_machine=0`으로 낮추므로 응답 유실 때도 flag만 믿지 말고 주기적인 전체 재조회로 복구한다. [타입/테이블 처리](https://github.com/Fuzzyline-HAS2/fuzzyline-core/blob/bc6907fa78c9cae713bbbf068d0ad766fc12a92b/store/web-server/esp-routes.js#L368), [ReceiveMine](https://github.com/Fuzzyline-HAS2/fuzzyline-core/blob/bc6907fa78c9cae713bbbf068d0ad766fc12a92b/store/web-server/esp-routes.js#L2099)
@@ -53,12 +61,12 @@ Node의 `GET /api/esp`와 호환 별칭 `GET /has2.php`를 사용한다. 서버�
 | --- | --- | --- |
 | `role` | Origin은 `neutral/player/tagger/ghost`; `revival` 입력도 `ghost`로 정규화 | 다른 매장처럼 `revival`을 유령 wire 값으로 고정하지 않음 |
 | `life_chip` | **현재값에 value를 더함** | 칩 유무 스냅샷 0/1을 반복 전송하지 않음. 증감 보고의 중복·응답 유실을 별도 해결 |
-| `revival_count` | 정수 SET | 글러브가 시간 경과에 따라 0~4를 보고. 발각 reset도 값 0 보고를 기본안으로 검토 |
-| `revival_time` | Origin에서는 **카운트 한 칸의 충전 시간(초)** | count=0에서 시작하면 총 `4 × revival_time`. 60이면 240초이며 훈련소 9초와 다름. 실제 운영 값은 DB 조회 전 미확인 |
+| `revival_count` | 정수 SET | 충전은 서버가 수행하고 글러브는 표시만 따른다. 발각 버튼은 서버 최솟값 1을 보고(서버 충전 타이머 재시작) |
+| `revival_time` | Origin에서는 **카운트 1→4 전체 충전 시간(초)**. 서버가 한 칸을 `revival_time/3`마다 충전 | 글러브는 유효 범위(1..86400)만 검사하고 시간 계산에는 쓰지 않음 |
 | `is_open` | 정수 SET | 생명장치를 이미 열었는지 나타냄 |
 | `is_sacrificed` | 정수 SET | 생명칩 봉헌 여부 필드. 존재 자체가 자동 포획 추적 구현을 뜻하지 않음 |
 | `battery_remaining` | 실수 SET; DB REAL | 전압 또는 %로 변환하지 않고 받은 실수를 저장 |
-| `location` | 문자열 SET, 서버가 `vibe` 재계산 | Origin 방 ID를 사용 |
+| `location` | 문자열 SET, 서버가 `vibe` 재계산 | Origin 방 ID를 사용. 방/유효성이 바뀌면 즉시, 그 외에는 5초마다 재전송 |
 | `vibe` | 위치 계산 결과 수신 + 운영자 연출 명령 | 근접: 같은 방 **3**, 인접 방 **1**, 그 외 **0**. 연출 명령 **10~17**(v8, 아래 절). 허용 범위 0~17 정수, 그 밖은 스냅샷 거부 |
 | `esp_version` | 공통 device 메타에 저장 | TTGO 버전 보고. Nextion 버전은 신규 펌웨어에서 보고하지 않음 |
 
@@ -79,7 +87,7 @@ Node의 `GET /api/esp`와 호환 별칭 `GET /has2.php`를 사용한다. 서버�
 - 12~17은 **값이 직전과 다른 값으로 바뀐 순간**에만 재생된다. 같은 값이 유지되면 재생하지 않는다.
   같은 명령을 반복하려면 다른 값(보통 0)을 거친다: `12 → 0 → 12`.
 - **서버 계약**
-  1. 각 값은 **최소 2초 유지**한다(글러브 폴링 1초, 한 번 놓쳐도 관측되게).
+  1. 각 값은 **최소 2초 유지**한다. 글러브는 1초마다 `Loop`의 `shift_machine`을 확인하므로 vibe 변경에 flag가 서야 한다. flag 없이 바뀐 값은 최대 5초 뒤 안전 재조회에서야 보이며 2초 유지값은 놓칠 수 있다.
   2. 명령값(10~17)이 유지되는 동안 위치 기반 `vibe` 재계산이 이를 **덮어쓰지 않아야** 한다.
   3. 명령이 끝나면 근접 값(0/1/3)으로 되돌린다 — 명령값이 유지되는 동안 근접 진동은 멈춘다.
   4. 부팅·재연결 직후 첫 스냅샷에 들어 있는 명령값은 재생하지 않고 소비한다(OTA 재부팅 뒤 남아 있던 값이 울리지 않게).

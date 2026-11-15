@@ -1,5 +1,6 @@
 #include "../game_state.h"
 #include "../feedback.h"
+#include "../network_policy.h"
 
 #include <assert.h>
 #include <stdio.h>
@@ -16,7 +17,6 @@ static ServerSnapshot snapshot(Role role = Role::Ghost) {
   s.phase = Phase::Active;
   s.role = role;
   s.stepSeconds = 3;
-  s.capturesAllowed = true;
   return s;
 }
 
@@ -305,21 +305,16 @@ static void countAndServerRevival() {
   g.begin(false, 0);
   auto s = snapshot();
   g.applyServer(s, 100);
-  g.tick(3099); assert(g.count() == 0);
-  g.tick(3100); assert(g.count() == 1);
-  pop(g, GameEvent::Kind::SetCount, 1);
-  g.applyServer(s, 3500); assert(g.count() == 1);  // old read does not roll back
-  s.revivalCount = 1;
-  g.applyServer(s, 4000);  // ack must not move 6100 boundary
-  g.tick(6100); assert(g.count() == 2);
-  pop(g, GameEvent::Kind::SetCount, 2);
-  g.tick(15100); assert(g.count() == 3);  // pending sacrifice cap
-  pop(g, GameEvent::Kind::SetCount, 3);
+  g.tick(3100); g.tick(60000); assert(g.count() == 0);
+  noEvent(g);  // The server charges revival_count; the glove never counts on its own.
+  s.revivalCount = 1; g.applyServer(s, 3500); assert(g.count() == 1);
+  s.revivalCount = 2; g.applyServer(s, 6500); assert(g.count() == 2);
+  s.revivalCount = 3; g.applyServer(s, 9500); assert(g.count() == 3);
+  g.tick(15100); noEvent(g);
   assert(!g.canUseLifeDevice());
-  s.revivalCount = 3; s.sacrificed = true;
-  g.applyServer(s, 15110);
-  g.tick(18100); assert(g.count() == 4);
-  pop(g, GameEvent::Kind::SetCount, 4);
+  s.revivalCount = 4; s.sacrificed = true;
+  g.applyServer(s, 15110); assert(g.count() == 4);
+  noEvent(g);
   assert(g.canUseLifeDevice());
   g.chipChanged(true, 18200);
   noEvent(g);  // Physical observation does not mutate life or role.
@@ -339,10 +334,10 @@ static void foundRetainsChipAndOpen() {
   auto s = snapshot(); s.sacrificed = true; s.open = true; s.revivalCount = 2;
   g.applyServer(s, 100);
   g.chipChanged(true, 200); noEvent(g);
-  g.buttonPressed(300); pop(g, GameEvent::Kind::SetCount, 0);
-  assert(g.chipPresent() && !g.canUseLifeDevice());
-  s.revivalCount = 0; g.applyServer(s, 500);
-  g.tick(12300); pop(g, GameEvent::Kind::SetCount, 4);
+  g.buttonPressed(300); pop(g, GameEvent::Kind::SetCount, 1);
+  assert(g.chipPresent() && !g.canUseLifeDevice() && g.count() == 1);
+  s.revivalCount = 1; g.applyServer(s, 500);
+  g.tick(12300); assert(g.count() == 1);
   noEvent(g);  // Automatic revival belongs to the server.
 }
 
@@ -353,33 +348,45 @@ static void rebootRestoreAndPendingCountOrder() {
   s.open = true; s.sacrificed = true; s.lifeChip = 1; s.revivalCount = 3;
   g.applyServer(s, 100);
   noEvent(g);  // no new physical insertion delta after reboot
-  g.tick(3100); pop(g, GameEvent::Kind::SetCount, 4);
+  g.tick(3100); assert(g.count() == 3);
   noEvent(g);  // Automatic revival belongs to the server.
 
   GameModel resetting(Profile::Origin);
   resetting.begin(false, 0);
-  s.open = false; s.lifeChip = 0; s.revivalCount = 0;
+  s.open = false; s.lifeChip = 0; s.revivalCount = 2;
   resetting.applyServer(s, 0);
-  resetting.tick(3000); pop(resetting, GameEvent::Kind::SetCount, 1);
-  resetting.buttonPressed(3100); pop(resetting, GameEvent::Kind::SetCount, 0);
-  s.revivalCount = 1; resetting.applyServer(s, 3200);
-  assert(resetting.count() == 0);  // earlier in-flight count ack cannot undo button
-  s.revivalCount = 0; resetting.applyServer(s, 3300);
-  resetting.tick(6099); assert(resetting.count() == 0);
-  resetting.tick(6100); pop(resetting, GameEvent::Kind::SetCount, 1);
+  // The button writes the server minimum 1, never 0.
+  resetting.buttonPressed(3100); pop(resetting, GameEvent::Kind::SetCount, 1);
+  assert(resetting.count() == 1);
+  s.revivalCount = 3; resetting.applyServer(s, 3200);
+  assert(resetting.count() == 1);  // an older read cannot undo the pending button write
+  s.revivalCount = 1; resetting.applyServer(s, 3300);  // read-back acknowledges the write
+  assert(resetting.count() == 1);
+  s.revivalCount = 2; resetting.applyServer(s, 6300); assert(resetting.count() == 2);
+  s.revivalCount = 3; resetting.applyServer(s, 9300); assert(resetting.count() == 3);
+  resetting.tick(20000); assert(resetting.count() == 3);
+  noEvent(resetting);  // Later server charging is followed, never written back.
+
+  // Pressing at the server minimum: an old read of 1 settles early and harmlessly.
+  GameModel minimum(Profile::Origin);
+  minimum.begin(false, 0);
+  s.revivalCount = 1; minimum.applyServer(s, 0);
+  minimum.buttonPressed(100); pop(minimum, GameEvent::Kind::SetCount, 1);
+  minimum.applyServer(s, 200); assert(minimum.count() == 1);
+  s.revivalCount = 2; minimum.applyServer(s, 3200); assert(minimum.count() == 2);
 }
 
 static void roleChangeDropsQueuedCounts() {
   GameModel g(Profile::Origin); g.begin(false, 0);
   auto s = snapshot(Role::Ghost); g.applyServer(s, 0);
-  g.tick(3000);
+  g.buttonPressed(3000);
   GameEvent count; assert(g.peekEvent(count) && count.value == 1);
   s.role = Role::Player; g.applyServer(s, 3100);
   noEvent(g); assert(g.count() == 0);
   g.tick(10000); g.buttonPressed(10001); noEvent(g);
   s.role = Role::Ghost; g.applyServer(s, 11000);
-  g.tick(13999); noEvent(g);
-  g.tick(14000); pop(g, GameEvent::Kind::SetCount, 1);
+  g.tick(14000); noEvent(g);
+  g.buttonPressed(14001); pop(g, GameEvent::Kind::SetCount, 1);
 }
 
 static void remoteChangesAndFailures() {
@@ -387,16 +394,17 @@ static void remoteChangesAndFailures() {
   g.begin(false, UINT32_MAX - 1000U);
   auto s = snapshot(); s.sacrificed = true;
   g.applyServer(s, UINT32_MAX - 1000U);
-  g.tick(1999); pop(g, GameEvent::Kind::SetCount, 1);
+  g.tick(1999); noEvent(g);
   s.revivalCount = 1; g.applyServer(s, 2000);
   s.stepSeconds = 1; g.applyServer(s, 2500);
-  g.tick(3499); assert(g.count() == 1);
-  g.tick(3500); auto event = pop(g, GameEvent::Kind::SetCount, 2);
+  g.tick(3500); assert(g.count() == 1); noEvent(g);
+  s.revivalCount = 2; g.applyServer(s, 3500);
+  g.buttonPressed(3500); auto event = pop(g, GameEvent::Kind::SetCount, 1);
   g.commandUncertain(event.sequence);
   assert(!g.synchronized());
   assert(g.feedback().display == Display::Ghost);  // Loss of sync preserves the last color.
   g.buttonPressed(3600); noEvent(g);
-  g.applyServer(s, 3700); assert(g.count() == 1 && g.synchronized());
+  g.applyServer(s, 3700); assert(g.count() == 2 && g.synchronized());
   g.buttonPressed(3800);
   strcpy(s.session, "G1:run2");
   s.phase = Phase::Photo;
@@ -459,7 +467,7 @@ static void explicitPreparationStates() {
   // A display change out of live play discards an unsubmitted count safely.
   GameModel g(Profile::Origin); g.begin(false, 0);
   auto s = snapshot(Role::Ghost); s.deviceState = DeviceState::Activate;
-  g.applyServer(s, 0); g.tick(3000);
+  g.applyServer(s, 0); g.buttonPressed(3000);
   GameEvent count; assert(g.peekEvent(count) && count.kind == GameEvent::Kind::SetCount);
   s.deviceState = DeviceState::Ready; g.applyServer(s, 3010);
   noEvent(g); assert(g.feedback().haptic == Haptic::None);
@@ -572,6 +580,23 @@ static void taggerBlinkContinuesWhileInvalid() {
   assert(out.red == 48 && out.blue == 64);
 }
 
+static void buttonWaitsForFoundPattern() {
+  const feedback_config::Settings settings;
+  const uint32_t found = feedback_config::schedule(settings.onFound, settings).total;
+  assert(found == 400);  // 150/100/150 ms
+  for (uint32_t at : {1000U, UINT32_MAX - 100U}) {
+    GameModel g(Profile::Origin);
+    g.begin(false, at);
+    g.applyServer(snapshot(), at);
+    assert(g.buttonPressed(at).disposition == ButtonDisposition::Queued);
+    GameEvent e; assert(g.peekEvent(e) && e.value == 1);
+    assert(e.notBeforeMs == uint32_t(at + found));
+    assert(!eventDue(e, at) && !eventDue(e, at + found - 1));
+    assert(eventDue(e, at + found) && eventDue(e, at + found + 60000));
+    assert(g.feedback().haptic == Haptic::Found);  // Local feedback is immediate.
+  }
+}
+
 int main() {
   trainingBoundaries();
   trainingResetAndBoot();
@@ -592,5 +617,6 @@ int main() {
   invalidStateKeepsLastColor();
   photoUsesRoleColors();
   taggerBlinkContinuesWhileInvalid();
+  buttonWaitsForFoundPattern();
   puts("PASS: production game model, debounce, training, count, reconciliation and rollover");
 }
