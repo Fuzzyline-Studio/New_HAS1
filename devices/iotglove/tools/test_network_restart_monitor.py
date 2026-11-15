@@ -9,7 +9,7 @@ GLOVE = Path(__file__).resolve().parents[1]
 def functions():
     source = (GLOVE / "iotglove.cpp").read_text()
     output = []
-    for name in ("armMainWatchdog", "monitorNetwork"):
+    for name in ("paceMainWatchdog", "armMainWatchdog", "monitorNetwork"):
         match = re.search(rf"void {name}\(\) \{{", source)
         start, cursor, depth = match.start(), match.end(), 1
         while depth:
@@ -28,8 +28,10 @@ using esp_err_t = int;
 constexpr int ESP_OK=0, ESP_ERR_INVALID_STATE=1;
 struct esp_task_wdt_config_t { unsigned timeout_ms=0,idle_core_mask=0; bool trigger_panic=false; };
 void* mainWatchdog=nullptr;
+uint32_t mainWatchdogMs=0;
+unsigned watchdogConfigs=0;
 unsigned watchdogAdds=0, watchdogTimeout=0;
-esp_err_t esp_task_wdt_reconfigure(esp_task_wdt_config_t* c) {watchdogTimeout=c->timeout_ms;return ESP_OK;}
+esp_err_t esp_task_wdt_reconfigure(esp_task_wdt_config_t* c) {watchdogTimeout=c->timeout_ms;++watchdogConfigs;return ESP_OK;}
 esp_err_t esp_task_wdt_init(esp_task_wdt_config_t*) {return ESP_OK;}
 esp_err_t esp_task_wdt_add_user(const char*,void** out) {++watchdogAdds;*out=(void*)1;return ESP_OK;}
 namespace has1blackbox {
@@ -73,6 +75,10 @@ int main(){
   reset(UINT32_MAX);armMainWatchdog();
   assert(mainWatchdog && watchdogAdds==1 && watchdogTimeout==15000);
   armMainWatchdog();assert(watchdogAdds==1);
+  // OTA keeps the former 60s; the limit is applied only when it changes.
+  paceMainWatchdog();assert(watchdogConfigs==1);
+  ota=true;paceMainWatchdog();paceMainWatchdog();assert(watchdogTimeout==60000 && watchdogConfigs==2);
+  ota=false;paceMainWatchdog();assert(watchdogTimeout==15000 && watchdogConfigs==3);
   reset(1); // An earlier restart never delays the next one.
   tick(0,true);tick(1000);tick(10999);assert(!linkDownReported && !ESP.restarts);
   tick(11000);assert(linkDownReported && ESP.restarts==1 && restartReason==3 && motorOffs==1);

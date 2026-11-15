@@ -53,6 +53,7 @@ RTC_NOINIT_ATTR NetworkRestartHistory networkRestartHistory;
 RTC_NOINIT_ATTR LinkLossRecord linkLossRecord;
 NetworkRestartPolicy networkRestartPolicy;
 esp_task_wdt_user_handle_t mainWatchdog = nullptr;
+uint32_t mainWatchdogMs = 0;  // Limit last applied by paceMainWatchdog().
 bool stallReported = false, linkDownReported = false;
 uint32_t observedLossCount = 0;
 // Context for the link-loss record: last valid server state, motor activity,
@@ -657,13 +658,17 @@ void handleConsoleCommand(char command, uint32_t now) {
     if (command == 's' || command == '?') printDiagnostics(now);
     if (command == 'p') sendProbe(now, true);
 }
-void armMainWatchdog() {
-  if (mainWatchdog) return;  // Retry history never disables actual main-loop hang detection.
-  // Preserve the configured idle subscribers. The loop never blocks on the
-  // network (the worker does, under its own 20s limit), so a pass takes
-  // milliseconds; 15s leaves flash erases three times the core's 5s default.
+// The loop never blocks on the network (the worker does, under its own 20s
+// limit), so a pass takes milliseconds: 15s is three times the core's default.
+// While an OTA writes the flash the pass time is unmeasured, so the pair OTA
+// keeps the former 60s. Applied only when the wanted limit changes.
+void paceMainWatchdog() {
+  const uint32_t wanted = otaBusy() ? 60000U : 15000U;
+  if (wanted == mainWatchdogMs) return;
+  mainWatchdogMs = wanted;  // Recorded even on failure: no retry or log every pass.
   esp_task_wdt_config_t config{};
-  config.timeout_ms = 15000;
+  config.timeout_ms = wanted;
+  // Preserve the configured idle subscribers.
 #if CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0
   config.idle_core_mask |= 1U;
 #endif
@@ -673,7 +678,13 @@ void armMainWatchdog() {
   config.trigger_panic = true;
   esp_err_t err = esp_task_wdt_reconfigure(&config);
   if (err == ESP_ERR_INVALID_STATE) err = esp_task_wdt_init(&config);
-  if (err == ESP_OK) err = esp_task_wdt_add_user("glove-main-progress", &mainWatchdog);
+  if (err != ESP_OK) remoteConsoleLogf("[recovery] main watchdog limit %lu ms not applied error=%d\n",
+      (unsigned long)wanted, err);
+}
+void armMainWatchdog() {
+  if (mainWatchdog) return;  // Retry history never disables actual main-loop hang detection.
+  paceMainWatchdog();
+  const esp_err_t err = esp_task_wdt_add_user("glove-main-progress", &mainWatchdog);
   if (err != ESP_OK) remoteConsoleLogf("[recovery] main watchdog unavailable error=%d\n", err);
 }
 
@@ -831,6 +842,6 @@ void gloveLoop() {
       battery.configured() && batteryVolts>0 ? int(batteryVolts*1000) : -1,peer.online(millis()));
   monitorNetwork();
   // Feed only after completing a full main-loop pass, including the worker check.
-  if (mainWatchdog) esp_task_wdt_reset_user(mainWatchdog);
+  if (mainWatchdog) { paceMainWatchdog(); esp_task_wdt_reset_user(mainWatchdog); }
   delay(1);  // Yield to Wi-Fi/RTOS; all timers above are nonblocking.
 }
