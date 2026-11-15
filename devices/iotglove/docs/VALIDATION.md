@@ -14,7 +14,7 @@
 - 호스트 C++ 테스트 **19개 통과**(신규 `link_loss_test.cpp` 포함, gcc 14 컨테이너). 도구 Python 테스트 **24개 통과**(fixed SSID 패치 하네스의 10초 타임아웃 포함).
 - `has2-wifi-result-api.patch`는 first_store `a1581da9` HAS2_Wifi에 `git apply --check` 통과.
 - ESP32 Arduino 3.3.11, 격리 sketchbook에서 TTGO 본게임 compile-only 통과: 프로그램 1,109,017 / 1,966,080 bytes (56%), 정적 RAM 63,088 / 327,680 bytes (19%).
-- 실기 확인 항목: AP 전원 차단 30초 뒤 `[recovery] wifi down ...` 과 재시작, 다음 부팅의 `[recovery] retained link loss:` 두 줄이 Telnet 수집기에 도달하는지, 재시작 없이 AP 복귀 시 `[recovery] link loss resolved without restart`, `s` 상태의 `[link]`·`[battery] adc_mv` 값.
+- 실기 확인 항목: AP 전원 차단 10초 뒤(v26까지는 30초) `[recovery] wifi down ...` 과 재시작, 다음 부팅의 `[recovery] retained link loss:` 두 줄이 Telnet 수집기에 도달하는지, 재시작 없이 AP 복귀 시 `[recovery] link loss resolved without restart`, `s` 상태의 `[link]`·`[battery] adc_mv` 값.
 
 # 1차 SW 검증 기록
 

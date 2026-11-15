@@ -99,5 +99,10 @@ class MonitorTest(unittest.TestCase):
             subprocess.run([os.environ.get("CXX","c++"),"-std=c++17","-Wall","-Wextra","-Werror","-pedantic",
                             "-I",str(GLOVE),str(source),"-o",str(binary)],check=True)
             subprocess.run([str(binary)],check=True)
+    def test_main_loop_reads_the_live_link_state(self):
+        source=(GLOVE/"wifi.cpp").read_text(encoding="utf-8")
+        body=source[source.index("bool networkDiagnostics(NetworkDiagnostics& out) {"):]
+        body=body[:body.index("\n}\n")]
+        self.assertLess(body.index("out = diagnostics;"),body.index("out.wifiConnected = linkUp.load();"))
 if __name__ == "__main__":
     unittest.main()

@@ -33,9 +33,9 @@ constexpr uint32_t kWifiLostRestartMs = 10000;
 constexpr uint32_t kWifiNeverUpRestartMs = 180000;
 
 // The main loop times the outage itself, from the moment it first sees the
-// published link state read down. The worker's wifiDownSinceMs is written by
-// another task at a different moment than wifiConnected, so pairing the two
-// can read as an outage as old as the previous one; it is for logs only.
+// link read down. The worker's wifiDownSinceMs is written by another task at a
+// different moment than the link state, so pairing the two can read as an
+// outage as old as the previous one; the restart decision never reads it.
 class LinkOutageClock {
  public:
   void observe(bool connected, uint32_t now) {

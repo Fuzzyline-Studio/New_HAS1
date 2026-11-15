@@ -647,6 +647,10 @@ bool networkDiagnostics(NetworkDiagnostics& out) {
   portENTER_CRITICAL(&diagnosticsMux);
   out = diagnostics;
   portEXIT_CRITICAL(&diagnosticsMux);
+  // The worker publishes at most once a second and not while it is inside a
+  // request, so its copy can still read down through the first cycle after a
+  // reconnect. The main loop's outage clock needs the link as it is now.
+  out.wifiConnected = linkUp.load();
   return true;
 }
 
