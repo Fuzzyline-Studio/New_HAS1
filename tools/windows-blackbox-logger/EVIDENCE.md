@@ -163,13 +163,13 @@ python import_omada_csv.py actual.csv --database data/telemetry.sqlite3 --site-i
 | 1 | outage_start: Wi-Fi 연결 끊김 감지 | 다음 재시작 임계시간 ms |
 | 2 | deferred: 안전 조건 때문에 복구 보류 | blocker bitmask |
 | 3 | restart_requested: 자체 재시작 요청 | 0, scan driver fault로 인한 즉시 재시작이면 4(수집기가 "Wi-Fi 스캔 정지 복구" 재부팅으로 알림) |
-| 4 | healthy_backoff_reset: 안정 상태 후 백오프 초기화 | 0 |
+| 4 | healthy_backoff_reset: 안정 상태 후 재시작 횟수 초기화 | 0 |
 | 5 | prior_restart_intent: 직전 자체 재시작 의도 재생 | 0 |
 
 `attempts`는 자체 복구 재시작 이력이며 최대 65535에서 포화하지만, 횟수 도달로 복구를
-중단하지 않는다. 첫 복구(attempts=0)는 **이번 부팅에 한 번이라도 Wi-Fi 연결을 관측한 경우
-30000ms**, 아직 연결한 적이 없는 경우 180000ms를 기준으로 한다. 이후 attempts=1/2/3 이상은
-각각 300000/900000/1800000ms이며, 모든 임계시간에 장치별 0..5000ms 지터를 더한다.
+중단하지 않는다. 임계시간은 **이번 부팅에 한 번이라도 Wi-Fi 연결을 관측한 경우
+30000ms**, 아직 연결한 적이 없는 경우 180000ms이며 장치별 0..5000ms 지터를 더한다.
+v43까지의 펌웨어는 attempts=1/2/3 이상일 때 300000/900000/1800000ms를 썼다.
 이번 부팅의 연결 관측 여부는 RTC로 이어받지 않는다. stage 1의 detail에는 그때 적용한
 임계시간이 기록되므로, 과거 기록을 현재 정책으로 다시 계산하거나 덮어쓰지 않는다.
 stage 2의 detail은 1=OTA, 2=uncertain_completion, 4=worker_fault, 8=in_flight이며
@@ -178,14 +178,16 @@ stage 2의 detail은 1=OTA, 2=uncertain_completion, 4=worker_fault, 8=in_flight�
 이 정책은 **Wi-Fi 미연결**에 대한 것이다. Wi-Fi 연결 상태에서 HTTP 오류가 나는 경우나
 작업 정지는 기존 경로로 구분한다. stage 5는 RTC에 남은 재시작 **의도**이며 실제 리셋 원인은
 `device.boot.actual_reset_reason`을 확인한다. 전원 단절이나 다른 원인의 리셋에서는 이전
-자체 복구 이력을 이어받지 않는다. 백오프 초기화에는 Wi-Fi 연결과 최근 서버 응답이 계속
+자체 복구 이력을 이어받지 않는다. 횟수 초기화에는 Wi-Fi 연결과 최근 서버 응답이 계속
 유효한 10분이 필요하다. 발생 시각은 각 레코드의 boot/uptime 기준이며 Windows 수신 시각을
 장치 발생 시각으로 대체하지 않는다.
 
 
-## 글러브 자동 재시작 백오프 기록
+## 글러브 자동 재시작 기록
 
-새 복구 정책은 이전의 3회 후 중단 제한을 없애고, 반복 장애 때 대기시간을 늘린다.
+v26 다음 릴리즈부터 장애가 기한(worker 20/30초, 링크 30초, 미접속 부팅 180초)에 도달하면 재시작 횟수와
+무관하게 바로 재시작을 요청한다. `restart.wait`·`restart.wait_cancel`과 아래 백오프 설명은
+v19~v26 펌웨어의 기록에만 해당한다.
 이전 펌웨어의 `restart.request` 기록도 같은 형식으로 보존하며 과거 정책을 바꿔 해석하지 않는다.
 
 | 태그 | 값 0 | 값 1 | 값 2 | 값 3 |

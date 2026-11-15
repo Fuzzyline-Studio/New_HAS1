@@ -5,8 +5,8 @@ the existing `min_spiffs` data partition. TTGO production and training builds us
 the `iotglove` device identifier; `device.boot` v[3] distinguishes training.
 Beetle does not link or run the logger. Game HTTP, shared libraries, deployed OTA
 protocol and partition table are unchanged. Current automatic restart pacing is
-documented in `NETWORK_RECOVERY.md`: the former three-restart cap has been
-replaced by continuing retries with backoff. Logging itself does not delay recovery.
+documented in `NETWORK_RECOVERY.md`: neither a restart cap nor a repeated-failure
+backoff applies. Logging itself does not delay recovery.
 
 ## Configuration
 
@@ -94,7 +94,7 @@ pause flag and retains the existing OTA calls and watchdog exemption. Already
 running flash operations cannot be preempted by that flag.
 
 The final restart record is best-effort RAM enqueue with **no wait** once the
-current recovery policy, including any repeated-failure backoff, is due; it can be lost. Previously stored records survive according
+current recovery policy is due; it can be lost. Previously stored records survive according
 to the library's flash guarantees. RTC retained loss evidence is copied on warm
 boot but is not reliable after power removal.
 
@@ -150,8 +150,8 @@ when no later operation occurs.
 `ap:<12 hex BSSID>` records event ID, reason, channel (`INT32_MIN` when not provided),
 reserved. `wifi.ip.gw.mask` records IPv4, gateway, netmask canonical big-endian numeric uint32 values and IP-changed flag. Event payloads are copied directly, with no new scans.
 `worker.stall` gives phase/operation/operation-age/progress-age; `wifi.down.threshold`
-gives down-age/failures/was-up/reason. These are initial fault-threshold records,
-not a promise of an immediate reboot during repeated-failure backoff. OTA
+gives down-age/failures/was-up/reason. A `restart.request` follows in the same
+main-loop pass. OTA
 exemptions remain; `http.force_reconnect` records the actual policy decision.
 
 `adc.min.age.n.batt_age` gives minimum **ADC pin mV** in the summary window, age of
@@ -242,31 +242,25 @@ parity with observation metadata enabled or disabled. Physical voltage, device
 latency and abrupt-power-loss acceptance tests remain outstanding.
 
 
-## Continuing restart backoff
+## Restart requests
 
-The former three-attempt permanent stop and its watchdog-registration inhibition
-are removed. The main loop calls the production restart policy each iteration,
-independent of one-shot fault-log latches. First thresholds stay 20 seconds for a
-normal HTTP worker stall, 30 seconds for an established Wi-Fi link loss and 180
-seconds if this boot never connected. After prior recovery restarts, total wait
-from the observed continuous fault origin is `max(original threshold, 300/900/1800
-seconds)` plus 0–5 seconds jitter. The delay remains capped at 1800 seconds plus
-jitter after that; retry count itself does not disable recovery. Actual main-loop
-hangs retain their separate 60-second TWDT and cannot honor main-loop backoff.
+The main loop calls the production restart policy each iteration, independent of
+one-shot fault-log latches. A restart is requested the moment a fault reaches its
+own limit: 20 seconds for a normal HTTP worker stall, 30 seconds for an established
+Wi-Fi link loss and 180 seconds if this boot never connected. Earlier restarts never
+lengthen these limits (the 300/900/1800-second backoff of v19-v26 is removed), and
+no attempt count stops recovery. Actual main-loop hangs keep their separate
+60-second TWDT.
 
 | Text subtype | v[0..3] |
 |---|---|
-| `restart.wait` | cause (2 worker/3 link), retained previous attempts, total wait ms, remaining ms at enqueue |
-| `restart.wait_cancel` | previous cause, retained previous attempts, elapsed ms since continuous fault origin, reserved |
 | `restart.backoff_reset` | previous attempts, healthy interval ms (600000), worker sequence, reserved |
 | `restart.request` | cause (1 server/2 worker/3 link), attempts including this request, reserved, reserved |
 
-Wait is logged once when scheduled, cancellation once when no fault qualifies or
-OTA protection starts. The origin may be moved earlier when another continuous
-fault source is observed, never later merely because the cause changes. A wait
-record's remaining value is a sample, not a live countdown. Backoff reset requires
-actual Wi-Fi connection and progressing worker for ten minutes; disconnected
-retry-loop progress alone does not reset it. Attempts and worker sequences are
+`restart.wait` and `restart.wait_cancel` are written only by v19-v26 firmware.
+`restart.backoff_reset` keeps its name but now only clears the diagnostic count: it
+requires actual Wi-Fi connection and a progressing worker for ten minutes;
+disconnected retry-loop progress alone does not reset it. Attempts and worker sequences are
 uint32 values carried in signed numeric wire slots. Attempt count saturates at
 `UINT32_MAX`; the older `LinkLossRecord.restartAttempt` field saturates at 255,
 meaning **at least 255**. RTC history magic changes to `GWR3`; this does not change

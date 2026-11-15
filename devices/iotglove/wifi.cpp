@@ -62,7 +62,7 @@ std::atomic<int8_t> lastRssi{0};
 std::atomic<uint32_t> lossCount{0}, lossAtMs{0};
 std::atomic<uint16_t> lossReason{0};
 std::atomic<int8_t> lossRssi{0};
-bool wifiWasUp = false, wifiDown = true, forcedReconnect = false;
+bool wifiWasUp = false, wifiDown = true;
 uint32_t wifiDownSinceMs = 0, wifiUpSinceMs = 0, connectFailures = 0;
 
 int8_t clampRssi(int value) {
@@ -107,7 +107,11 @@ void publishDiagnostics() {
   const bool connected = linkUp.load();
   if (connected) lastRssi.store(clampRssi(WiFi.RSSI()));
   portENTER_CRITICAL(&diagnosticsMux);
-  diagnostics.wifiConnected = connected;
+  // The Wi-Fi event task clears linkUp at once, but this worker stamps the
+  // outage start only at the top of its loop. Until then the start time is the
+  // previous outage (or boot), so keep reporting the link as up: a down link
+  // with a stale start reads as an outage already past the restart limit.
+  diagnostics.wifiConnected = connected || !wifiDown;
   diagnostics.wifiWasUp = wifiWasUp;
   diagnostics.wifiDownSinceMs = wifiDownSinceMs;
   diagnostics.wifiConnectFailures = connectFailures;
@@ -533,12 +537,10 @@ void worker(void*) {
       if (linkUp.exchange(false)) noteLinkLost(disconnectReason.load());
       if (!wifiDown) {
         wifiDown = true; wifiDownSinceMs = millis(); connectFailures = 0;
-        if (forcedReconnect) remoteConsoleLogf("[net] link released for forced reconnect\n");
-        else remoteConsoleLogf("[net] link lost reason=%u rssi=%d up_ms=%lu losses=%lu\n",
+        remoteConsoleLogf("[net] link lost reason=%u rssi=%d up_ms=%lu losses=%lu\n",
             lossReason.load(), lossRssi.load(), (unsigned long)(wifiDownSinceMs - wifiUpSinceMs),
             (unsigned long)lossCount.load());
       }
-      forcedReconnect = false;
       invalidateConnection();
       recovery.disconnected();
       beginOperation(NetworkPhase::Connecting, 30000);
@@ -594,7 +596,11 @@ void worker(void*) {
       beginOperation(NetworkPhase::Connecting, 30000);
       // Do not erase credentials. TrySetupFixed alone returns immediately if
       // the STA still claims to be associated with this SSID.
-      forcedReconnect = true;
+      // Start the outage clock before the link reads as down. The wait below
+      // publishes diagnostics, and a down link with a stale start time reads as
+      // an outage as old as the boot, which the main loop restarts at once.
+      wifiDown = true; wifiDownSinceMs = millis(); connectFailures = 0;
+      remoteConsoleLogf("[net] link released for forced reconnect\n");
       linkUp.store(false);  // Deliberate: the disconnect event is not a link loss.
       WiFi.disconnect(true, false);
       finishOperation();

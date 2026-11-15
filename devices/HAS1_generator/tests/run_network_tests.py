@@ -941,10 +941,9 @@ int main(){
  reset();GeneratorOfflineRecovery::requested(networkRecoveryHistory,30000);
  assert(GeneratorOfflineRecovery::boot(networkRecoveryHistory,true));mainTurn();
  online=false;mainTurn();const uint32_t retryAt=now;
- now=retryAt+30000;mainTurn();assert(restarts==0);
- now=retryAt+299999;mainTurn();assert(restarts==0);
- now=retryAt+300000;mainTurn();assert(restarts==1&&networkRecoveryHistory.attempts==2);
- pass("repeated recovery boot keeps storm backoff even after a brief online observation");
+ now=retryAt+29999;mainTurn();assert(restarts==0);
+ now=retryAt+30000;mainTurn();assert(restarts==1&&networkRecoveryHistory.attempts==2);
+ pass("repeated recovery boot still recovers a previously associated link after 30 seconds");
 
  // Overall outage recovery: failed association returns normally, so neither
  // task watchdog need fire; the independent outage timer must still act.
@@ -962,7 +961,7 @@ int main(){
  reset();online=false;assert(!NetworkOfflineRecoveryService());now+=180000;
  networkMaintenance=true;assert(!NetworkOfflineRecoveryService()&&restarts==0&&!networkRecoveryFence);
  networkMaintenance=false;networkDriverFault=true;networkRecoveryHistory.attempts=1;GeneratorOfflineRecovery::seal(networkRecoveryHistory);
- now+=120000;assert(networkRecoveryPolicy.due(now,networkRecoveryHistory,networkRecoverySalt));
+ now+=120000;assert(networkRecoveryPolicy.due(now,networkRecoverySalt));
  assert(!NetworkOfflineRecoveryService()&&restarts==0&&!networkRecoveryFence);
  networkRecoveryHistory=GeneratorOfflineRecovery::Retained{};GeneratorOfflineRecovery::seal(networkRecoveryHistory);
  networkDriverFault=false;networkSlots[0].occupied=true;networkSlots[0].active=true;
@@ -982,7 +981,7 @@ int main(){
  reset();GeneratorOfflineRecovery::requested(networkRecoveryHistory,1000);
  assert(GeneratorOfflineRecovery::boot(networkRecoveryHistory,true));mainTurn();
  online=false;mainTurn();networkDriverFault=true;now+=29000;mainTurn();assert(restarts==0);
- now+=400000;assert(networkRecoveryPolicy.due(now,networkRecoveryHistory,networkRecoverySalt));mainTurn();assert(restarts==0&&!networkRecoveryFence);
+ now+=400000;assert(networkRecoveryPolicy.due(now,networkRecoverySalt));mainTurn();assert(restarts==0&&!networkRecoveryFence);
  pass("scan driver fault restarts immediately through the gated path once; a repeat after an own restart is left to the worker watchdog");
 
  reset();completionSetup();assert(!GeneratorNetworkComplete("battery_max"));
