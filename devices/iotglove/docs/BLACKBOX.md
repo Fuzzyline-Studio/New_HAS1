@@ -246,7 +246,7 @@ latency and abrupt-power-loss acceptance tests remain outstanding.
 
 The main loop calls the production restart policy each iteration, independent of
 one-shot fault-log latches. A restart is requested the moment a fault reaches its
-own limit: 20 seconds for a normal HTTP worker stall, 30 seconds for an established
+own limit: 20 seconds for a normal HTTP worker stall, 10 seconds for an established
 Wi-Fi link loss and 180 seconds if this boot never connected. Earlier restarts never
 lengthen these limits (the 300/900/1800-second backoff of v19-v26 is removed), and
 no attempt count stops recovery. Actual main-loop hangs keep their separate

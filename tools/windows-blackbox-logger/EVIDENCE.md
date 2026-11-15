@@ -185,7 +185,7 @@ stage 2의 detail은 1=OTA, 2=uncertain_completion, 4=worker_fault, 8=in_flight�
 
 ## 글러브 자동 재시작 기록
 
-v26 다음 릴리즈부터 장애가 기한(worker 20/30초, 링크 30초, 미접속 부팅 180초)에 도달하면 재시작 횟수와
+v26 다음 릴리즈부터 장애가 기한(worker 20/30초, 링크 10초, 미접속 부팅 180초)에 도달하면 재시작 횟수와
 무관하게 바로 재시작을 요청한다. `restart.wait`·`restart.wait_cancel`과 아래 백오프 설명은
 v19~v26 펌웨어의 기록에만 해당한다.
 이전 펌웨어의 `restart.request` 기록도 같은 형식으로 보존하며 과거 정책을 바꿔 해석하지 않는다.

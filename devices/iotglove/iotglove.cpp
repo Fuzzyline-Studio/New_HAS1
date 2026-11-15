@@ -273,12 +273,12 @@ void printDiagnostics(uint32_t now) {
         (unsigned long)(now - network.startedAtMs), (unsigned long)(now - network.progressAtMs),
         (unsigned long)network.deadlineMs, (unsigned long)network.idleDeadlineMs);
     remoteConsoleLogf("[link] up=%u was_up=%u down_ms=%lu connect_failures=%lu losses=%lu last_loss_reason=%u last_loss_rssi=%d last_loss_age_ms=%lu restart_after_ms=%lu\n",
-        network.wifiConnected, network.wifiWasUp,
-        (unsigned long)(network.wifiConnected ? 0 : now - network.wifiDownSinceMs),
+        network.wifiConnected, networkRestartPolicy.link().wasUp(),
+        (unsigned long)networkRestartPolicy.link().downMs(now),
         (unsigned long)network.wifiConnectFailures, (unsigned long)network.wifiLossCount,
         network.wifiLastLossReason, network.wifiLastLossRssi,
         (unsigned long)(network.wifiLossCount ? now - network.wifiLastLossAtMs : 0),
-        (unsigned long)(network.wifiWasUp ? kWifiLostRestartMs : kWifiNeverUpRestartMs));
+        (unsigned long)networkRestartPolicy.link().limitMs());
     remoteConsoleLogf("[http] error=%u phase=%u status=%d elapsed_ms=%lu bytes=%lu primary_failures=%lu reconnects=%lu cooldown_ms=%lu\n",
         network.lastHttpError, network.lastHttpPhase, network.lastHttpStatus,
         (unsigned long)network.lastHttpElapsedMs, (unsigned long)network.lastHttpBytes,
@@ -706,8 +706,12 @@ void monitorNetwork() {
   }
   const bool ota = otaBusy() || d.phase == NetworkPhase::Ota;
   const bool stalled = !ota && networkWorkerStalled(d, now);
-  const bool linkDown = !ota && wifiLinkDownTooLong(d, now);
-  // These latches limit diagnostics only; poll() below decides the restart.
+  // poll() advances the main loop's own outage clock and decides the restart;
+  // the latches below limit diagnostics only.
+  const NetworkRestartDecision decision = networkRestartPolicy.poll(
+      networkRestartHistory,d,now,ota);
+  const LinkOutageClock& link = networkRestartPolicy.link();
+  const bool linkDown = !ota && link.tooLong(now);
   if (!stalled) stallReported = false;
   else if (!stallReported) {
     stallReported = true;
@@ -721,14 +725,12 @@ void monitorNetwork() {
   if (!linkDown) linkDownReported = false;
   else if (!linkDownReported) {
     linkDownReported = true;
-    has1blackbox::blackbox.log(has1blackbox::EventType::Recovery,now-d.wifiDownSinceMs,
-        d.wifiConnectFailures,d.wifiWasUp,d.wifiLastLossReason,"wifi.down.threshold");
+    has1blackbox::blackbox.log(has1blackbox::EventType::Recovery,link.downMs(now),
+        d.wifiConnectFailures,link.wasUp(),d.wifiLastLossReason,"wifi.down.threshold");
     remoteConsoleLogf("[recovery] wifi down %lu ms was_up=%u connect_failures=%lu restarts=%lu\n",
-        (unsigned long)(now-d.wifiDownSinceMs),d.wifiWasUp,
+        (unsigned long)link.downMs(now),link.wasUp(),
         (unsigned long)d.wifiConnectFailures,(unsigned long)networkRestartHistory.attempts);
   }
-  const NetworkRestartDecision decision = networkRestartPolicy.poll(
-      networkRestartHistory,d,now,ota);
   if (decision.restored) {
     has1blackbox::blackbox.log(has1blackbox::EventType::Recovery,decision.previousAttempts,
         NetworkRestartPolicy::kStableMs,d.sequence,0,"restart.backoff_reset");

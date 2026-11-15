@@ -29,14 +29,27 @@ struct NetworkDiagnostics {
 // the radio/driver only recovers through a reboot, and the retry loop alone
 // never ends. A boot that has not associated yet keeps the longer limit, since
 // the AP may simply be off. OTA keeps the exemption of the worker watchdog.
-constexpr uint32_t kWifiLostRestartMs = 30000;
+constexpr uint32_t kWifiLostRestartMs = 10000;
 constexpr uint32_t kWifiNeverUpRestartMs = 180000;
 
-inline bool wifiLinkDownTooLong(const NetworkDiagnostics& d, uint32_t now) {
-  if (d.wifiConnected || d.phase == NetworkPhase::Ota) return false;
-  const uint32_t limit = d.wifiWasUp ? kWifiLostRestartMs : kWifiNeverUpRestartMs;
-  return uint32_t(now - d.wifiDownSinceMs) >= limit;
-}
+// The main loop times the outage itself, from the moment it first sees the
+// published link state read down. The worker's wifiDownSinceMs is written by
+// another task at a different moment than wifiConnected, so pairing the two
+// can read as an outage as old as the previous one; it is for logs only.
+class LinkOutageClock {
+ public:
+  void observe(bool connected, uint32_t now) {
+    if (connected) { down_ = false; wasUp_ = true; }
+    else if (!down_) { down_ = true; since_ = now; }
+  }
+  bool wasUp() const { return wasUp_; }  // Associated at least once this boot.
+  uint32_t downMs(uint32_t now) const { return down_ ? uint32_t(now - since_) : 0; }
+  uint32_t limitMs() const { return wasUp_ ? kWifiLostRestartMs : kWifiNeverUpRestartMs; }
+  bool tooLong(uint32_t now) const { return down_ && downMs(now) >= limitMs(); }
+ private:
+  bool down_ = false, wasUp_ = false;
+  uint32_t since_ = 0;
+};
 
 // A fixed-SSID attempt ends as soon as the driver reports failure, so this
 // pause alone spaces attempts. After a power cut the AP keeps the lost session
