@@ -13,8 +13,9 @@ struct NetworkDiagnostics {
   int lastHttpStatus = 0;
   uint8_t lastHttpError = 0, lastHttpPhase = 0;
   uint16_t wifiDisconnectReason = 0;
-  // STA link itself, distinct from HTTP. The worker owns every field.
-  bool wifiConnected = false;        // associated to the fixed SSID; read live by networkDiagnostics()
+  // STA link itself, distinct from HTTP. networkDiagnostics() reads the link
+  // state and the loss record live; the worker publishes the rest.
+  bool wifiConnected = false;        // associated to the fixed SSID
   uint32_t wifiConnectFailures = 0;  // consecutive failed fixed-SSID attempts in this outage
   uint32_t wifiLossCount = 0;        // disconnects of an established link since boot
   uint32_t wifiLastLossAtMs = 0;     // uptime of the latest such disconnect event

@@ -43,7 +43,7 @@ NetworkRestartPolicy networkRestartPolicy;
 NetworkDiagnostics sample;
 LinkLossRecord linkLossRecord{};
 bool networkReady=true,stallReported=false,linkDownReported=false,ota=false;
-uint32_t nowMs=0,observedLossCount=0,bootId=1,lastBatteryAdcSample=0;
+uint32_t nowMs=0,observedLossCount=0,lastBatteryAdcSample=0;
 int lastValidPhase=0,lastValidRole=0,lastValidDeviceState=0,restartReason=0;
 uint32_t millis(){return nowMs;}
 bool networkDiagnostics(NetworkDiagnostics& d){d=sample;return true;}
@@ -109,5 +109,9 @@ class MonitorTest(unittest.TestCase):
         body=source[source.index("bool networkDiagnostics(NetworkDiagnostics& out) {"):]
         body=body[:body.index("\n}\n")]
         self.assertLess(body.index("out = diagnostics;"),body.index("out.wifiConnected = linkUp.load();"))
+        for field in ("wifiLossCount = lossCount", "wifiLastLossAtMs = lossAtMs",
+                      "wifiLastLossReason = lossReason", "wifiLastLossRssi = lossRssi"):
+            self.assertIn("out."+field+".load();",body)
+            self.assertNotIn("diagnostics."+field,source)
 if __name__ == "__main__":
     unittest.main()

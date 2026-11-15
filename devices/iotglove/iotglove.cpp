@@ -53,7 +53,7 @@ RTC_NOINIT_ATTR NetworkRestartHistory networkRestartHistory;
 RTC_NOINIT_ATTR LinkLossRecord linkLossRecord;
 NetworkRestartPolicy networkRestartPolicy;
 esp_task_wdt_user_handle_t mainWatchdog = nullptr;
-uint32_t mainWatchdogMs = 0;  // Limit last applied by paceMainWatchdog().
+uint32_t mainWatchdogMs = 0;  // Limit last requested by paceMainWatchdog().
 bool stallReported = false, linkDownReported = false;
 uint32_t observedLossCount = 0;
 // Context for the link-loss record: last valid server state, motor activity,
