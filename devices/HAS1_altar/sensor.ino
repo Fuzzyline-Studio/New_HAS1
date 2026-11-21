@@ -77,7 +77,13 @@ void SensorInit()
   else
   {
     Serial.println("!!!RFID connect failed!!! - will keep retrying in loop()");
-    has2wifi.Send((String)(const char *)my["device_name"], "device_state", "PN532");
+    // 서버가 github을 지시한 상태면 보고하지 않는다: device_state를 덮어쓰면 OTA 전용
+    // 부팅이 github을 못 보고 정상 부팅으로 돌아가 OTA가 취소된다(리더가 죽은 제단이야말로
+    // 펌웨어를 받아야 한다). OTA 전용 부팅에서도 같은 이유로 보내지 않는다.
+    if (!OtaLeanBoot() && (String)(const char *)my["device_state"] != "github")
+    {
+      has2wifi.Send((String)(const char *)my["device_name"], "device_state", "PN532");
+    }
     rfid_recovery.recordFailure(millis());
   }
 
