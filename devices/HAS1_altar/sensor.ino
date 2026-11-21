@@ -10,7 +10,6 @@ static unsigned long tag_start_time = 0;
 static String pending_tagger_device_name = "";
 static bool ir_chip_pending = false;          // IR센서가 칩을 감지해서 크랭크 대기 중
 static bool ir_chip_confirm_animated = false; // 이 칩(ir_chip_pending 세션)에 대해 OnTagChipConfirmed(애니메이션)를 이미 실행했는지
-static bool pending_success_sound = false;    // (1,1) 성공음을 마이크로스위치 클릭까지 대기
 // 술래가 훔친 칩을 반납하는 기존 메커닉(아래 두번째 분기)도 태그가 붙어있는 동안
 // 디바운스 없이 매초(RfidLoop 폴링 주기) 블로킹 HTTP 3개(has2wifi.Send)를 반복
 // 발사했었다 - 그동안 loop()가 막혀 MicroSw 클릭을 놓치는 원인이 됐다. 한 번만
@@ -51,13 +50,6 @@ void RunAltarSuccess()
   has2wifi.Send((String)(const char *)my["device_name"], "taken_chip", "+1");
   // Send()는 결과를 돌려주지 않는다 - 걸린 시간만 남긴다(서버 반영 여부의 증거가 아님).
   BlackBoxAltar("altar.count.end", (int32_t)(millis() - count_started), 0, 0, 0);
-
-  // (1,1) 성공음은 activate(생명칩 바치는 루틴)일 때만 - blink(술래 활성화)에서는
-  // 마이크로스위치가 눌려도 재생하지 않는다.
-  if ((String)(const char *)my["device_state"] == "activate")
-  {
-    pending_success_sound = true;
-  }
 }
 
 //****************************************** Initialize ******************************************
@@ -92,9 +84,6 @@ void SensorInit()
   // 솔레노이드는 setup()에서 초기화/부팅 배출 완료. IR / Micro Switch init
   IrSensorInit();
   MicroSwInit();
-
-  // DFPlayer init (내부에 2초 blocking delay가 있어 맨 마지막에 호출)
-  Mp3_Init();
 }
 
 //********************************************* Rfid *********************************************
@@ -588,7 +577,7 @@ static void NeoAnimReset()
 // 고정된다 - 플레이어가 태그+칩 직후 바로 크랭크를 돌리면 확인 연출이 도중에 얼어붙은
 // 채 2초를 보내고 남은 칸부터 이어져 어색했고, 솔레노이드와 LED 전류가 그 2초 동안 겹쳤다.
 // 통전 직전에 모든 스트립을 끄고(피크 전류 최소화 + 의도된 암전), 통전이 끝나면 현재 서버
-// 상태의 기본 화면으로 되돌린다. 별도 성공 연출은 두지 않는다(성공음은 기존대로 복귀 뒤).
+// 상태의 기본 화면으로 되돌린다. 별도 성공 연출은 두지 않는다.
 void NeoSceneOff()
 {
   NeoFunc = NeoNo; // 진행 중이던 연출 중단 - 복귀 시 상태별 기본 연출로 다시 지정한다
@@ -892,8 +881,7 @@ void IrSensorLoop()
 // 실제로 연다 - 태그 없이 칩만 넣고 돌리거나, 태그+칩이 한 번 확인된 뒤 태그를
 // 떼고서 돌리는 경우엔 열리지 않는다(태그가 이미 없으므로 tag_active가 false로
 // 리셋돼있음 - RfidLoop 참고). taken_chip+1 요청(RunAltarSuccess)은
-// setting_state가 아닐 때 개방 전에 보낸다. pending_success_sound가
-// 서있으면(태그+IR이 이미 확인된 상태) 이 시점에 성공음(1,1)을 재생한다.
+// setting_state가 아닐 때 개방 전에 보낸다.
 void MicroSwInit()
 {
   pinMode(MICRO_SW_PIN, INPUT);
@@ -954,14 +942,8 @@ void MicroSwLoop()
           }
           SolenoidPulse();
 
-          // 통전이 끝나면 현재 상태의 기본 화면으로 복귀. 성공음은 그 뒤에 재생한다.
+          // 통전이 끝나면 현재 상태의 기본 화면으로 복귀.
           NeoSceneRestore();
-
-          if (pending_success_sound)
-          {
-            Mp3PlayLargeFolder(1, 1); // 성공음 - 태그+IR+크랭크가 다 확인된 시점
-            pending_success_sound = false;
-          }
         }
         else
         {

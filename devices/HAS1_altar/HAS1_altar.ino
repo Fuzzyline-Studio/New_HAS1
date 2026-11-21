@@ -11,7 +11,7 @@
 #define FIRMWARE_VER 50
 #define PARTITION_VER 3
 #include "HAS1_altar.h"
-// loopTask 기본 스택(8KB)으로는 WiFi+BLE+RFID+DFPlayer+Neopixel x5 조합의 setup()
+// loopTask 기본 스택(8KB)으로는 WiFi+BLE+RFID+Neopixel x5 조합의 setup()
 // 호출 체인에서 스택 오버플로우(Stack canary watchpoint triggered)가 발생해 16KB로 증설.
 // arduino-esp32 core의 weak 심볼을 오버라이드하는 방식 (시그니처 반드시 일치해야 함).
 size_t getArduinoLoopTaskStackSize(void)

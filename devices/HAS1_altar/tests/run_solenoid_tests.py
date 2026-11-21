@@ -47,7 +47,7 @@ std::vector<std::string> events;
 unsigned long now = 10000, opened_at = 0;
 int ir = HIGH, micro = HIGH, solenoid = LOW, sends = 0, opens = 0;
 bool tag_active = false, ir_chip_pending = false;
-bool ir_chip_confirm_animated = false, pending_success_sound = false;
+bool ir_chip_confirm_animated = false;
 bool transport_failed = false;
 unsigned long millis() { return now; }
 void pinMode(int pin, int mode) {
@@ -88,10 +88,6 @@ struct Log {
     template<class T> void println(T) {}
     template<class... T> void printf(const char*, T...) {}
 } Serial, SerialMirror;
-void Mp3PlayLargeFolder(int folder, int track) {
-    assert(folder == 1 && track == 1 && solenoid == LOW);
-    events.push_back("sound");
-}
 void OnTagChipConfirmed() {}
 // Blackbox hooks: every record is requested while the solenoid is de-energized,
 // and the count request is bracketed before the pulse. Logging never opens it.
@@ -112,7 +108,7 @@ void BlackBoxAltar(const char* label, int32_t a, int32_t, int32_t, int32_t) {
     blackbox.push_back(name);
 }
 // LED blackout around the pulse: off must come before the (blocking) send and the pulse,
-// restore must come after the pulse and before the success sound.
+// restore must come after the pulse. No success sound: the DFPlayer was removed.
 void NeoSceneOff() { events.push_back("leds_off"); }
 void NeoSceneRestore() { assert(solenoid == LOW); events.push_back("leds_on"); }
 void CrashReportInit() { events.push_back("crash_init"); }
@@ -182,14 +178,12 @@ int main(int argc, char** argv) {
         if (scenario == "blink") my["device_state"] = "blink";
         detectChip();
         crank();
-        if (scenario == "blink") {
-            expect({"leds_off", "send", "send_returned", "on", "delay:2000", "off", "leds_on"});
-        } else if (transport_failed) {
-            expect({"leds_off", "send", "send_failed", "on", "delay:2000", "off", "leds_on", "sound"});
+        if (transport_failed) {
+            expect({"leds_off", "send", "send_failed", "on", "delay:2000", "off", "leds_on"});
         } else {
-            expect({"leds_off", "send", "send_returned", "on", "delay:2000", "off", "leds_on", "sound"});
+            expect({"leds_off", "send", "send_returned", "on", "delay:2000", "off", "leds_on"});
         }
-        assert(sends == 1 && opens == 1 && !ir_chip_pending && !pending_success_sound);
+        assert(sends == 1 && opens == 1 && !ir_chip_pending);
         expectBlackbox({"altar.ir.chip", "altar.sw.click", "altar.count.begin", "altar.count.end",
                         "altar.solenoid.on", "altar.solenoid.off"});
         if (scenario == "held_switch") {

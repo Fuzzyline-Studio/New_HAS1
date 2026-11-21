@@ -60,10 +60,6 @@ void IrSensorLoop();
 void MicroSwInit();
 void MicroSwLoop();
 
-//=============================== DFPlayer (MP3) ============================
-void Mp3_Init();
-void Mp3PlayLargeFolder(uint8_t folder_number, uint16_t file_number);
-
 //================================ RFID ==================================
 Adafruit_PN532 nfc(PN532_SCK, PN532_MISO, PN532_MOSI, PN532_SS);
 

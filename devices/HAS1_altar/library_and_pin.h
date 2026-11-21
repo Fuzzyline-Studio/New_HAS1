@@ -11,8 +11,6 @@
 
 #include <Adafruit_NeoPixel.h>
 #include <Adafruit_PN532.h>
-#include <HardwareSerial.h>
-#include <DFRobotDFPlayerMini.h>
 
 #include <SimpleTimer.h>
 #include <esp_task_wdt.h>
@@ -54,8 +52,7 @@
 #define PN532_MOSI                      (23)
 #define PN532_SS                        (5)
 
-#define DFPLAYER_RX_PIN 39   // ESP RX ← DFPlayer TX
-#define DFPLAYER_TX_PIN 33   // ESP TX → DFPlayer RX
+// GPIO 39/33은 예전 DFPlayer(MP3) 배선 자리 - 성공음을 쓰지 않아 코드에서 뺐다.
 
 #define SOLENOID_PIN 14                 // 솔레노이드 데이터 핀 (MOSFET IRLZ44N 구동)
 #define SOLENOID_PULSE_MS 2000          // 잠금/해제 순간 통전 길이(ms). 500ms는 딸깍만 나고 안 열림
