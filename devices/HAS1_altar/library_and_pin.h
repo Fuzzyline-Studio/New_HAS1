@@ -11,7 +11,7 @@
 
 #include <Adafruit_NeoPixel.h>
 #include <Adafruit_PN532.h>
-#include <SoftwareSerial.h>
+#include <HardwareSerial.h>
 #include <DFRobotDFPlayerMini.h>
 
 #include <SimpleTimer.h>
