@@ -1,0 +1,145 @@
+name: Symbolize firmware crash
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/symbolize-firmware-crash.yml
+      - scripts/symbolize_firmware_crash.py
+      - scripts/test_symbolize_firmware_crash.py
+      - docs/blackbox/CRASH_ANALYSIS.md
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: Original Deploy Firmware run ID
+        type: string
+        required: true
+        default: '40188400587'
+      artifact_id:
+        description: Encrypted ELF artifact ID from that run
+        type: string
+        required: true
+        default: '12597655276'
+      elf_sha256:
+        description: Full ELF SHA-256 printed by the original deployment
+        type: string
+        required: true
+        default: '17149407e0ec5a95355c8c051f7426ad163ab6a71225c65a1a3d20210266b69f'
+      elf_name:
+        description: Exact sketch ELF basename inside the archive
+        type: string
+        required: true
+        default: HAS1_generator.ino.elf
+      addresses:
+        description: Space-separated 32-bit hexadecimal PC/backtrace addresses (maximum 32)
+        type: string
+        required: true
+        default: '0x4019a2c2 0x4019a3d0 0x4019a973 0x40097965 0x400949bb 0x401d24ed 0x4009895f 0x40084965'
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Decryption, identity, archive and symbolization regression tests
+        run: python3 -m unittest discover -s scripts -p test_symbolize_firmware_crash.py -v
+
+  symbolize:
+    if: github.event_name == 'workflow_dispatch'
+    needs: tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+    env:
+      SOURCE_RUN: ${{ inputs.run_id }}
+      SOURCE_ARTIFACT: ${{ inputs.artifact_id }}
+      EXPECTED_ELF_SHA256: ${{ inputs.elf_sha256 }}
+      EXPECTED_ELF_NAME: ${{ inputs.elf_name }}
+      CRASH_ADDRESSES: ${{ inputs.addresses }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate deployment provenance and inputs
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { SOURCE_RUN: run, SOURCE_ARTIFACT: artifactId,
+              EXPECTED_ELF_SHA256: sha, EXPECTED_ELF_NAME: elf,
+              CRASH_ADDRESSES: addresses } = process.env;
+            if (!/^[1-9][0-9]{0,14}$/.test(run) || !/^[1-9][0-9]{0,14}$/.test(artifactId))
+              throw new Error('Run and artifact IDs must be positive integers.');
+            if (!/^[a-fA-F0-9]{64}$/.test(sha))
+              throw new Error('A full deployment ELF SHA-256 is required.');
+            if (!/^[A-Za-z0-9_-]+\.ino\.elf$/.test(elf))
+              throw new Error('ELF name must be a sketch basename.');
+            const pcs = addresses.trim().split(/\s+/);
+            if (!pcs.length || pcs.length > 32 || pcs.some(pc => !/^0x[0-9a-fA-F]{1,8}$/.test(pc)))
+              throw new Error('Provide 1 to 32 hexadecimal 32-bit addresses.');
+            const repo = context.repo;
+            const { data: source } = await github.rest.actions.getWorkflowRun({ ...repo, run_id: Number(run) });
+            if (source.path.split('@')[0] !== '.github/workflows/deploy-firmware.yml' ||
+                source.status !== 'completed' || source.conclusion !== 'success' ||
+                source.head_repository?.full_name !== `${repo.owner}/${repo.repo}`)
+              throw new Error('Source must be a successful Deploy Firmware run from this repository.');
+            const { data: artifact } = await github.rest.actions.getArtifact({ ...repo, artifact_id: Number(artifactId) });
+            const device = elf.slice(0, -'.ino.elf'.length);
+            const prefix = `firmware-elf-${device}-v`;
+            if (artifact.expired || artifact.workflow_run?.id !== Number(run) ||
+                !artifact.name.startsWith(prefix) || !artifact.name.endsWith(`-${run}`) ||
+                artifact.size_in_bytes > 128 * 1024 * 1024)
+              throw new Error('Artifact does not match the deployment, device or size limit, or has expired.');
+            await core.summary.addHeading('Firmware crash provenance')
+              .addLink('Original deployment', source.html_url)
+              .addRaw(`\n\nArtifact ID: ${artifactId}\n\nExpected ELF SHA-256: ${sha.toLowerCase()}\n`)
+              .write();
+      - name: Download original encrypted ELF
+        uses: actions/download-artifact@v4
+        with:
+          artifact-ids: ${{ inputs.artifact_id }}
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/crash-encrypted
+          merge-multiple: true
+      - name: Install Arduino CLI
+        uses: arduino/setup-arduino-cli@v2
+      - name: Install matching ESP32 symbol tools
+        env:
+          ESP32_BOARD_INDEX: https://espressif.github.io/arduino-esp32/package_esp32_index.json
+        run: |
+          arduino-cli config init --overwrite
+          arduino-cli core update-index --additional-urls "$ESP32_BOARD_INDEX"
+          arduino-cli core install esp32:esp32@3.3.11 --additional-urls "$ESP32_BOARD_INDEX"
+          test -x "$HOME/.arduino15/packages/esp32/tools/esp-x32/2601/bin/xtensa-esp32-elf-addr2line"
+      - name: Decrypt, verify exact ELF and symbolize
+        env:
+          ELF_ARCHIVE_KEY: ${{ secrets.ELF_ARCHIVE_KEY }}
+        run: |
+          python3 scripts/symbolize_firmware_crash.py \
+            --archive "$RUNNER_TEMP/crash-encrypted/firmware-elf.tar.gz.enc" \
+            --sha256 "$EXPECTED_ELF_SHA256" \
+            --elf-name "$EXPECTED_ELF_NAME" \
+            --addr2line "$HOME/.arduino15/packages/esp32/tools/esp-x32/2601/bin/xtensa-esp32-elf-addr2line" \
+            --addresses "$CRASH_ADDRESSES" \
+            --output "$RUNNER_TEMP/crash-report.md"
+          cat "$RUNNER_TEMP/crash-report.md" >> "$GITHUB_STEP_SUMMARY"
+      - name: Retain symbolized report only
+        uses: actions/upload-artifact@v4
+        with:
+          name: crash-symbols-${{ github.run_id }}
+          path: ${{ runner.temp }}/crash-report.md
+          if-no-files-found: error
+          retention-days: 14
+      - name: Remove downloaded archive and local report
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/crash-encrypted" "$RUNNER_TEMP/crash-report.md"
