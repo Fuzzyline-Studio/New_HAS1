@@ -8,7 +8,7 @@
  * @copyright Copyright (c) 2022
  */
 
-#define FIRMWARE_VER 50
+#define FIRMWARE_VER 51
 #define PARTITION_VER 3
 #include "HAS1_altar.h"
 // loopTask 기본 스택(8KB)으로는 WiFi+BLE+RFID+Neopixel x5 조합의 setup()
