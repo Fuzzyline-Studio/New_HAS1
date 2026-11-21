@@ -11,7 +11,7 @@ EVENT_NAMES = {1: "Boot", 2: "Crash", 3: "WifiEvent", 4: "WifiTry", 5: "WifiSumm
                11: "Peer", 12: "Logger", 13: "Lost", 14: "Dropped", 15: "Acked"}
 TOPIC = re.compile(r"has1/blackbox/v1/([0-9A-F]{12})/batch\Z")
 HEADER = re.compile(
-    r"BB1 (iotglove|HAS1_generator) ([0-9A-F]{12}) ([0-9a-f]{16}) ([0-9a-f]{8})\Z"
+    r"BB1 (iotglove|HAS1_generator|HAS1_altar) ([0-9A-F]{12}) ([0-9a-f]{16}) ([0-9a-f]{8})\Z"
 )
 HEX_RECORD = re.compile(r"[0-9a-fA-F]{128}\Z")
 

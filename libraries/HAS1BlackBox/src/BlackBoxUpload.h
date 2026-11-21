@@ -15,7 +15,8 @@ inline size_t encodeBatch(const Batch &batch, const char *device,
   if (!batch.count || batch.count > BatchRecords || !device || !mac ||
       std::strlen(mac) != 12)
     return 0;
-  if (std::strcmp(device, "iotglove") && std::strcmp(device, "HAS1_generator"))
+  if (std::strcmp(device, "iotglove") && std::strcmp(device, "HAS1_generator") &&
+      std::strcmp(device, "HAS1_altar"))
     return 0;
   for (size_t i = 0; i < 12; ++i)
     if (!((mac[i] >= '0' && mac[i] <= '9') || (mac[i] >= 'A' && mac[i] <= 'F')))

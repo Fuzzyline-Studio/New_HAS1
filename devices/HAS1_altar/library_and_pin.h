@@ -20,6 +20,23 @@
 #include <SecureOTA.h>
 #include "secrets.h"
 
+// 별도 블랙박스 라이브러리(HAS1BlackBox). broker URI가 비어 있으면 flash에만 남긴다.
+// 정식 배포는 CI가 secrets.h에 broker URI/암호를 써넣는다(계정 이름은 장치 MAC).
+// 0으로 두면 기록/업로드 태스크를 만들지 않는다(훅 호출만 남는다).
+#ifndef HAS1_ALTAR_BLACKBOX_ENABLED
+#define HAS1_ALTAR_BLACKBOX_ENABLED 1
+#endif
+#ifndef HAS1_ALTAR_BLACKBOX_BROKER_URI
+#define HAS1_ALTAR_BLACKBOX_BROKER_URI ""
+#endif
+#ifndef HAS1_ALTAR_BLACKBOX_MQTT_USERNAME
+#define HAS1_ALTAR_BLACKBOX_MQTT_USERNAME ""
+#endif
+#ifndef HAS1_ALTAR_BLACKBOX_MQTT_PASSWORD
+#define HAS1_ALTAR_BLACKBOX_MQTT_PASSWORD ""
+#endif
+#include "blackbox.h"
+
 
 // 핀 선언
 

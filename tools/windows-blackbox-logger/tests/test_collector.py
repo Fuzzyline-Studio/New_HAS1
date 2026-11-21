@@ -33,6 +33,9 @@ class ProtocolTests(unittest.TestCase):
 
     def test_both_device_types(self):
         self.assertEqual(parse_batch(TOPIC, payload(device="HAS1_generator")).device, "HAS1_generator")
+        self.assertEqual(parse_batch(TOPIC, payload(device="HAS1_altar")).device, "HAS1_altar")
+        with self.assertRaises(ProtocolError):
+            parse_batch(TOPIC, payload(device="HAS1_duct"))
 
     def test_invalid_inputs(self):
         original = payload()

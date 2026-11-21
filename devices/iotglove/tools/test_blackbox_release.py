@@ -9,7 +9,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / "scripts"))
-from write_blackbox_release_config import configuration, checked_broker, checked_password
+from write_blackbox_release_config import PREFIXES, configuration, checked_broker, checked_password
 from firmware_targets import TARGETS
 from archive_iotglove_release import source_paths, DEVICES
 from verify_blackbox_release import verify_firmware
@@ -19,7 +19,7 @@ class BlackboxReleaseTests(unittest.TestCase):
     def test_release_auto_enables_mqtt_only_for_blackbox_targets(self):
         for target in TARGETS:
             with self.subTest(target=target):
-                if target in ("iotglove", "HAS1_generator"):
+                if target in PREFIXES:
                     _, public = configuration(target, broker="mqtt://172.30.1.43:1883",
                                               password="deployment-password", release=True)
                     self.assertEqual(public["mode"], "mqtt")
@@ -35,12 +35,12 @@ class BlackboxReleaseTests(unittest.TestCase):
                     self.assertEqual(public["mode"], "not_applicable")
 
     def test_mqtt_requires_each_setting_and_supported_target(self):
-        for target in ("iotglove", "HAS1_generator"):
+        for target in PREFIXES:
             for broker, password in ((None, None), ("mqtt://172.30.1.43:1883", None),
                                      (None, "a-real-deployment-secret")):
                 with self.subTest(target=target, broker=broker), self.assertRaises(ValueError):
                     configuration(target, "mqtt", broker, password)
-        for target in set(TARGETS) - {"iotglove", "HAS1_generator"}:
+        for target in set(TARGETS) - set(PREFIXES):
             with self.subTest(target=target), self.assertRaises(ValueError):
                 configuration(target, "mqtt", "mqtt://172.30.1.43:1883", "deployment-password")
 
@@ -49,7 +49,7 @@ class BlackboxReleaseTests(unittest.TestCase):
             defines, public = configuration(target, "flash", "bad-uri", "should-never-appear")
             self.assertNotIn("should-never-appear", defines + json.dumps(public))
             self.assertEqual(public["broker_uri"], "")
-            if target not in ("iotglove", "HAS1_generator"):
+            if target not in PREFIXES:
                 self.assertEqual(defines, "")
                 self.assertEqual(public["mode"], "not_applicable")
 
@@ -95,7 +95,8 @@ class BlackboxReleaseTests(unittest.TestCase):
     def test_cli_keeps_hmac_exact_and_public_metadata_credential_free(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            for target, prefix in (("iotglove", "IOTGLOVE"), ("HAS1_generator", "HAS1_GENERATOR")):
+            for target, prefix in (("iotglove", "IOTGLOVE"), ("HAS1_generator", "HAS1_GENERATOR"),
+                                   ("HAS1_altar", "HAS1_ALTAR")):
                 process, header, public = self.run_helper(root, target, "mqtt")
                 self.assertEqual(process.returncode, 0, process.stderr)
                 macros = {line.split(" ", 2)[1]: json.loads(line.split(" ", 2)[2])
@@ -164,7 +165,8 @@ class CompiledBlackboxReleaseTests(unittest.TestCase):
         return configuration(target, "auto", self.broker, self.password, release=True)[1]
 
     def test_mqtt_image_matches_config_for_both_targets(self):
-        for target in ("iotglove", "HAS1_generator"):
+        self.assertEqual(set(PREFIXES), {"iotglove", "HAS1_generator", "HAS1_altar"})
+        for target in PREFIXES:
             self.assertTrue(verify_firmware(target, self.config(target), self.mqtt_image(), self.broker, self.password))
 
     def test_flash_metadata_or_stale_target_cannot_publish(self):
@@ -184,7 +186,7 @@ class CompiledBlackboxReleaseTests(unittest.TestCase):
                 verify_firmware("iotglove", self.config(), image, self.broker, self.password)
 
     def test_other_targets_do_not_require_mqtt_settings_or_markers(self):
-        for target in set(TARGETS) - {"iotglove", "HAS1_generator"}:
+        for target in set(TARGETS) - set(PREFIXES):
             public = configuration(target, "auto", release=True)[1]
             self.assertFalse(verify_firmware(target, public, b"other-target-image"))
 

@@ -26,7 +26,7 @@ on:
         type: boolean
         default: false
       blackbox_mode:
-        description: "auto=대상별 자동; 글러브/발전기는 mqtt만 정식 배포 가능"
+        description: "auto=대상별 자동; 글러브/발전기/제단은 mqtt만 정식 배포 가능"
         type: choice
         options:
           - auto
@@ -232,7 +232,7 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/build-out"
           EXTRA_LIBRARIES=()
-          if [[ "$TARGET_DEVICE" == "iotglove" || "$TARGET_DEVICE" == "HAS1_generator" ]]; then
+          if [[ "$TARGET_DEVICE" == "iotglove" || "$TARGET_DEVICE" == "HAS1_generator" || "$TARGET_DEVICE" == "HAS1_altar" ]]; then
             EXTRA_LIBRARIES+=(--library "$GITHUB_WORKSPACE/libraries/HAS1BlackBox")
           fi
           if [[ "$TARGET_DEVICE" == "iotglove" || "$TARGET_DEVICE" == "iotglove_beetle" || "$TARGET_DEVICE" == "HAS1_tagmachine_main" || "$TARGET_DEVICE" == "HAS1_tagmachine_sub" ]]; then

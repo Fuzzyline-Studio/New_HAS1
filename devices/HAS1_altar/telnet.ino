@@ -75,13 +75,21 @@ void TelnetSerial::telnetLoop() {
         const int socketFd = _client.fd();
         if (socketFd >= 0) {
             const char *deviceName = my["device_name"].as<const char *>();
-            char buffer[128];
-            const int length = snprintf(
+            char buffer[320];
+            int length = snprintf(
                 buffer, sizeof(buffer),
-                "[diagnostics] firmware=%u device=%.18s uptime_ms=%lu\r\n",
+                "[diagnostics] firmware=%u device=%.18s uptime_ms=%lu",
                 static_cast<unsigned>(FIRMWARE_VER), deviceName ? deviceName : "",
                 static_cast<unsigned long>(millis()));
+            // 블랙박스 상태(BLACKBOX.md): USB 없이도 기록/업로드가 되는지 확인한다.
             if (length > 0 && static_cast<size_t>(length) < sizeof(buffer)) {
+                const int extra = BlackBoxDiagnosticsText(buffer + length, sizeof(buffer) - length);
+                length = (extra > 0 && static_cast<size_t>(extra) < sizeof(buffer) - length)
+                             ? length + extra : -1;
+            }
+            if (length > 0 && static_cast<size_t>(length) + 2 < sizeof(buffer)) {
+                buffer[length++] = '\r';
+                buffer[length++] = '\n';
                 (void)send(socketFd, buffer, static_cast<size_t>(length), MSG_DONTWAIT);
             }
         }

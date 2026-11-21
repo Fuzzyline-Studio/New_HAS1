@@ -65,6 +65,7 @@ void DataChange()
             (String)(const char *)cur["game_state"] + " -> " +
             (String)(const char *)my["game_state"]);
         any_change = true;
+        BlackBoxAltarState(0, (const char *)my["game_state"]);
         if ((String)(const char *)my["game_state"] == "setting")
         {
             SettingFunc();
@@ -85,6 +86,7 @@ void DataChange()
             (String)(const char *)cur["device_state"] + " -> " +
             (String)(const char *)my["device_state"]);
         any_change = true;
+        BlackBoxAltarState(1, (const char *)my["device_state"]);
         if ((String)(const char *)my["device_state"] == "activate")
         {
             NeoFunc = NeoGaming;
@@ -118,7 +120,9 @@ void DataChange()
             // 이 태스크를 워치독에서 빼고, 끝나면 다시 등록한다(성공 시엔 자체 재부팅하므로
             // 재등록까지 안 감).
             esp_task_wdt_delete(NULL);
+            BlackBoxOtaBegin(); // MQTT 세션 정리 대기(최대 15초) + flash 쓰기 정지
             ota.check();
+            BlackBoxOtaEnd();
             esp_task_wdt_add(NULL);
         }
     }
@@ -128,6 +132,7 @@ void DataChange()
         Serial.println("[DataChange] taken_chip: " +
             String((int)cur["taken_chip"]) + " -> " + String((int)my["taken_chip"]));
         any_change = true;
+        BlackBoxAltar("altar.taken.max", (int)my["taken_chip"], (int)my["max_chip"], 0, 0);
     }
     if((int)my["max_chip"] != (int)cur["max_chip"])
     {
