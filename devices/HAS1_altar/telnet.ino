@@ -75,7 +75,7 @@ void TelnetSerial::telnetLoop() {
         const int socketFd = _client.fd();
         if (socketFd >= 0) {
             const char *deviceName = my["device_name"].as<const char *>();
-            char buffer[320];
+            char buffer[448];
             int length = snprintf(
                 buffer, sizeof(buffer),
                 "[diagnostics] firmware=%u device=%.18s uptime_ms=%lu",

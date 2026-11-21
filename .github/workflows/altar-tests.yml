@@ -22,3 +22,5 @@ jobs:
         run: python devices/HAS1_altar/tests/run_rfid_presence_tests.py
       - name: Solenoid and chip counting regression
         run: python devices/HAS1_altar/tests/run_solenoid_tests.py
+      - name: OTA-only boot policy
+        run: python devices/HAS1_altar/tests/run_ota_boot_tests.py

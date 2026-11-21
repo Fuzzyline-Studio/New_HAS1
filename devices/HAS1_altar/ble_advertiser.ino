@@ -368,6 +368,10 @@ static bool StartAdvertising()
 
 void BleAdvertiserUpdateFromDeviceName(const char *device_name)
 {
+  if (OtaLeanBoot())
+  {
+    return;
+  }
   if (device_name == nullptr || device_name[0] == '\0')
   {
     ADV_LOG("[ADV] missing device_name");
@@ -408,6 +412,10 @@ void BleAdvertiserUpdateFromDeviceName(const char *device_name)
 
 void BleAdvertiserMaintain()
 {
+  if (OtaLeanBoot())
+  {
+    return;
+  }
   if (!ble_adv_retry_pending || ble_adv_local_name[0] == '\0')
   {
     return;
