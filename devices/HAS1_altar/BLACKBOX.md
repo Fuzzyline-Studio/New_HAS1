@@ -51,7 +51,9 @@ RTC에도 복사하므로, 패닉·워치독 재부팅 직전 기록이 flash에
 | `altar.taken.max` | 서버가 준 taken_chip, max_chip 변화 |
 | `altar.rfid.reinit` | PN532 재초기화 예약 |
 | `altar.rfid.recovered` | PN532 복구. 그동안 실패 횟수 |
-| `ota.github.check` | GitHub OTA 확인 시작 |
+| `ota.github.reboot` | github 지시로 OTA 전용 부팅으로 재시작. 그때 free heap, 최대 연속 블록 |
+| `ota.github.skipped` | 이번 github 지시는 이미 시도해서 다시 재부팅하지 않음 |
+| `altar.led.forced` | 암전 프레임을 가드 없이 보냄(깨졌을 수 있음). 스트립 수, 기다린 ms |
 
 그 밖의 기록:
 
@@ -80,8 +82,8 @@ RTC에도 복사하므로, 패닉·워치독 재부팅 직전 기록이 flash에
 
 ## 게임에 주는 영향
 
-- **업로드**: `game_state`를 아직 못 받았거나 `activate`인 동안, Wi-Fi가 끊긴 동안, OTA
-  중에는 올리지 않는다. 게임이 끝나 `setting`/`ready`가 되면 밀린 기록을 올린다. 진행 중이던
+- **업로드**: `game_state`를 아직 못 받았거나 `activate`인 동안, Wi-Fi가 끊긴 동안에는
+  올리지 않는다. 게임이 끝나 `setting`/`ready`가 되면 밀린 기록을 올린다. 진행 중이던
   세션이 권한 회수 뒤 끝나는 데는 시간이 걸릴 수 있다.
 - **LED**: flash 쓰기가 LED 전송 중간에 끼면 프레임이 깨질 수 있어 모든 `show()`가
   `NeoShow()`를 거친다. 가드를 못 잡으면 그 스트립은 보류되고 다음 loop에서 그 시점의 픽셀
@@ -89,8 +91,13 @@ RTC에도 복사하므로, 패닉·워치독 재부팅 직전 기록이 flash에
   100 ms 기다리고, 그래도 못 잡으면 가드 없이 보낸다.
 - **기록 호출**: `log()`는 대기 없는 큐 넣기다. flash 쓰기는 별도 태스크가 한다. 큐(32건)가
   차면 버리고 개수를 센다(`bb_dropped`).
-- **OTA**: `github` 진입 시 업로드 권한을 거두고 MQTT 세션이 정리될 때까지 최대 15초 기다린
-  뒤 flash 쓰기를 멈춘다. 업데이트가 없으면 다시 켠다.
+- **OTA**: 블랙박스는 메모리를 약 30 KiB 상시 쓰고, GitHub TLS는 약 45 KiB(연속 17 KiB
+  블록 2개)가 필요하다. 그래서 `device_state`가 `github`이 되면 제단은 표시를 남기고
+  재부팅해 **BLE와 블랙박스를 켜지 않은 OTA 전용 부팅**에서 `ota.check()`를 돌린다.
+  업데이트가 없거나 실패하면 한 번 더 재부팅해 정상으로 돌아온다(재부팅마다 2초 부팅 배출이
+  돈다). 서버 상태가 `github`에 남아 있어도 같은 지시로 재부팅을 반복하지 않으며,
+  `github`을 벗어났다가 다시 들어와야 새로 시도한다. OTA가 5분 넘게 멈추면 타이머가
+  재부팅한다.
 - 블랙박스 태스크는 워치독을 먹이지 않고, 블랙박스가 재부팅을 일으키지도 않는다.
 
 용량은 1,920건이다. 한 게임에 흐름 기록 100~150건 + 분당 4~6건 정도라 몇 게임 분량이지만
@@ -101,7 +108,8 @@ RTC에도 복사하므로, 패닉·워치독 재부팅 직전 기록이 flash에
 텔넷 접속 첫 줄 `[diagnostics]` 끝에 블랙박스 상태가 붙는다: `bb_ready`(0/1),
 `bb_status`(1 = 정상, 5 = 모르는 내용이 있어 손대지 않음), `bb_partition`(spiffs 바이트),
 `bb_flash_errors`, `bb_uploaded`, `bb_upload_failures`, `bb_dropped`,
-`bb_core_state`(1 이번 리셋의 코어덤프, 2 예전 것, 3 없음), `bb_core_pc`.
+`bb_core_state`(1 이번 리셋의 코어덤프, 2 예전 것, 3 없음), `bb_core_pc`. 그 앞의
+`heap`/`heap_block`은 free heap과 최대 연속 블록, `ota_boot`는 OTA 전용 부팅(1) 여부다.
 
 호스트 테스트(`tests/run_solenoid_tests.py`, `tests/run_rfid_presence_tests.py`)는 실제
 `sensor.ino` 함수를 가짜 하드웨어로 돌려, 기록 요청이 집계·통전 순서를 바꾸지 않는지와

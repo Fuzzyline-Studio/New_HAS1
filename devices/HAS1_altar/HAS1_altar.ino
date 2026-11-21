@@ -60,7 +60,11 @@ void setup()
   Serial.begin(115200);
   SerialMirror.printf("[boot] firmware=%u\n", static_cast<unsigned>(FIRMWARE_VER));
   CrashReportInit();
-  BlackBoxBegin(); // 부팅 배출과 Wi-Fi/RFID 초기화(막힐 수 있음)보다 먼저 기록을 시작한다
+  OtaBootInit(); // 직전 부팅이 GitHub OTA를 요청했는지 판정 (game_state.ino)
+  if (!OtaLeanBoot())
+  {
+    BlackBoxBegin(); // 부팅 배출과 Wi-Fi/RFID 초기화(막힐 수 있음)보다 먼저 기록을 시작한다
+  }
   LogMemoryStats("boot");
   SerialMirror.println("[boot] Solenoid purge for 2000 ms (no chip count)");
   SolenoidPulse();

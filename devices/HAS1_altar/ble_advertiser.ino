@@ -260,6 +260,11 @@ void BleAdvertiserInit()
   {
     return;
   }
+  // OTA 전용 부팅에서는 BLE 컨트롤러를 켜지 않는다 - GitHub TLS에 그 메모리가 필요하다.
+  if (OtaLeanBoot())
+  {
+    return;
+  }
 
   ADV_LOG("[ADV] init");
   // 컨트롤러 init/enable 은 Arduino 의 btStart() 에 위임한다.

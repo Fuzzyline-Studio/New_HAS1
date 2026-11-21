@@ -13,8 +13,6 @@ void BlackBoxLoop();
 void BlackBoxAltar(const char *label, int32_t a, int32_t b, int32_t c, int32_t d);
 // 서버 상태 전환 기록. kind 0 = game_state, 1 = device_state.
 void BlackBoxAltarState(int32_t kind, const char *state);
-void BlackBoxOtaBegin();
-void BlackBoxOtaEnd();
 int BlackBoxDiagnosticsText(char *out, size_t cap);
 
 // 블랙박스 flash 쓰기와 LED 전송이 겹치지 않게 하는 show() 래퍼.

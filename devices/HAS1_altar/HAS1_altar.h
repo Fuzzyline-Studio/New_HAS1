@@ -31,6 +31,8 @@ void ActionFunc();
 void DataChange();
 void CrashReportInit();
 void CrashReportSend(const char *device_name);
+void OtaBootInit();
+bool OtaLeanBoot();
 
 //* =============================== Sensor =============================== *
 /**

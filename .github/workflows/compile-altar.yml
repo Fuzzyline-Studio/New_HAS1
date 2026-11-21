@@ -6,6 +6,8 @@ on:
       - 'devices/HAS1_altar/**'
       - 'libraries/HAS1BlackBox/**'
       - 'scripts/firmware_targets.py'
+      - 'scripts/write_blackbox_release_config.py'
+      - '.github/workflows/deploy-firmware.yml'
       - '.github/workflows/compile-altar.yml'
   workflow_dispatch:
 permissions:

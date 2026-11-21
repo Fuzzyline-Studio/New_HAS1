@@ -1,4 +1,88 @@
 #include "HAS1_altar.h"
+#include <esp_heap_caps.h>
+#include <esp_timer.h>
+
+//****************************************** GitHub OTA 전용 부팅 ******************************************
+// GitHub OTA는 TLS에 약 45KiB(연속 17KiB 블록 2개 포함)가 필요하다. BLE와 블랙박스가 켜진
+// 정상 부팅에서는 그만큼 남지 않을 수 있어(HAS1_generator에서 실제로 모든 요청이 실패했다),
+// device_state가 github이 되면 표시를 남기고 재부팅한 뒤 BLE·블랙박스 없이 뜬 부팅에서
+// ota.check()를 돌린다. 업데이트가 없거나 실패하면 다시 재부팅해 정상 부팅으로 돌아온다.
+// 표시는 RTC no-init에 두어 소프트웨어 재부팅만 건너간다(전원 차단이면 사라진다).
+static const uint32_t OTA_BOOT_REQUEST = 0x4f544131; // 다음 부팅은 OTA 전용
+static const uint32_t OTA_BOOT_DONE = 0x4f544132;    // 이번 github 지시는 이미 시도함
+static RTC_NOINIT_ATTR uint32_t ota_boot_marker;
+static bool ota_lean_boot = false;
+
+void OtaBootInit()
+{
+    const bool software_reset = esp_reset_reason() == ESP_RST_SW;
+    ota_lean_boot = software_reset && ota_boot_marker == OTA_BOOT_REQUEST;
+    if (ota_lean_boot)
+    {
+        ota_boot_marker = OTA_BOOT_DONE;
+    }
+    else if (!software_reset || ota_boot_marker != OTA_BOOT_DONE)
+    {
+        ota_boot_marker = 0; // 전원 투입/패닉 뒤의 값은 믿지 않는다
+    }
+}
+
+bool OtaLeanBoot()
+{
+    return ota_lean_boot;
+}
+
+// loop 워치독을 뗀 채 SecureOTA가 자체 타임아웃을 넘겨 멈추면 장치가 그대로 서 버린다.
+static void OtaStallRestart(void *)
+{
+    esp_restart();
+}
+
+static void OtaStallGuard()
+{
+    esp_timer_create_args_t args = {};
+    args.callback = OtaStallRestart;
+    args.name = "ota-stall";
+    esp_timer_handle_t timer = nullptr;
+    if (esp_timer_create(&args, &timer) == ESP_OK)
+    {
+        esp_timer_start_once(timer, 5ULL * 60ULL * 1000000ULL);
+    }
+}
+
+static void GithubOta()
+{
+    if (ota_lean_boot)
+    {
+        Serial.printf("[OTA] lean boot: heap=%lu largest=%lu\n",
+                      (unsigned long)ESP.getFreeHeap(),
+                      (unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+        // OTA 다운로드+플래시는 30초 넘게 걸릴 수 있어(그 동안 esp_task_wdt_reset()이
+        // 안 불림) 워치독을 그대로 두면 업데이트 도중 재부팅으로 끊긴다. 성공하면
+        // ota.check()가 직접 재부팅한다.
+        esp_task_wdt_delete(NULL);
+        OtaStallGuard();
+        ota.check();
+        // 업데이트가 없거나 실패했다. BLE는 부팅 때만 켤 수 있으므로 재부팅해 정상으로 돌아간다.
+        Serial.println("[OTA] no update applied - restarting into normal mode");
+        delay(200);
+        ESP.restart();
+    }
+    if (ota_boot_marker == OTA_BOOT_DONE)
+    {
+        // 이번 github 지시는 OTA 전용 부팅에서 이미 시도했다. 서버 상태가 github에 남아
+        // 있어도(실패 시 device_state를 못 돌려놓음) 재부팅을 반복하지 않는다.
+        Serial.println("[OTA] github already attempted - waiting for device_state to change");
+        BlackBoxAltar("ota.github.skipped", 0, 0, 0, 0);
+        return;
+    }
+    Serial.println("[OTA] github requested - restarting into OTA-only mode");
+    BlackBoxAltar("ota.github.reboot", (int32_t)ESP.getFreeHeap(),
+                  (int32_t)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT), 0, 0);
+    ota_boot_marker = OTA_BOOT_REQUEST;
+    delay(200);
+    ESP.restart();
+}
 
 /**
  * @brief DB gamestate가 setting 일 때 한번동작하는 코드
@@ -87,6 +171,10 @@ void DataChange()
             (String)(const char *)my["device_state"]);
         any_change = true;
         BlackBoxAltarState(1, (const char *)my["device_state"]);
+        if ((String)(const char *)my["device_state"] != "github")
+        {
+            ota_boot_marker = 0; // github을 벗어났다 - 다음 github 지시는 새로 시도한다
+        }
         if ((String)(const char *)my["device_state"] == "activate")
         {
             NeoFunc = NeoGaming;
@@ -114,16 +202,7 @@ void DataChange()
         }
         else if ((String)(const char *)my["device_state"] == "github")
         {
-            // OTA 다운로드+플래시는 30초 넘게 걸릴 수 있어(그 동안 esp_task_wdt_reset()이
-            // 안 불림) 워치독을 그대로 두면 업데이트 도중 재부팅으로 끊긴다(HAS1_generator에서
-            // 실측된 문제, 동일 워치독 구성이라 여기도 잠재해 있었음). ota.check() 동안만
-            // 이 태스크를 워치독에서 빼고, 끝나면 다시 등록한다(성공 시엔 자체 재부팅하므로
-            // 재등록까지 안 감).
-            esp_task_wdt_delete(NULL);
-            BlackBoxOtaBegin(); // MQTT 세션 정리 대기(최대 15초) + flash 쓰기 정지
-            ota.check();
-            BlackBoxOtaEnd();
-            esp_task_wdt_add(NULL);
+            GithubOta(); // 정상 부팅이면 OTA 전용 부팅으로 재시작, OTA 전용 부팅이면 ota.check()
         }
     }
 

@@ -6,15 +6,14 @@
 // 게임(game_state=activate) 밖에서만 MQTT로 수집 PC에 올린다. 게임 HTTP, 워치독,
 // OTA, 파티션은 바꾸지 않는다. 기록 형식과 한계는 BLACKBOX.md 참고.
 
-static bool blackBoxOta = false;
-
-// 게임 중과 OTA 중에는 올리지 않는다. 서버 상태를 한 번도 못 받았으면(Unknown) 닫아 둔다.
+// 게임 중에는 올리지 않는다. 서버 상태를 한 번도 못 받았으면(Unknown) 닫아 둔다.
+// GitHub OTA는 블랙박스를 켜지 않는 별도 부팅에서 돈다(game_state.ino).
 static void BlackBoxUploadGate()
 {
   const char *phase = (const char *)my["game_state"];
   const bool known = phase && phase[0];
   has1blackbox::blackbox.setUploadAllowed(
-      known && strcmp(phase, "activate") != 0 && !blackBoxOta && WiFi.status() == WL_CONNECTED);
+      known && strcmp(phase, "activate") != 0 && WiFi.status() == WL_CONNECTED);
 }
 
 void BlackBoxBegin()
@@ -82,37 +81,20 @@ void BlackBoxAltarState(int32_t kind, const char *state)
 {
   has1blackbox::blackbox.log(has1blackbox::EventType::State, kind, 0, 0, 0,
                              state && state[0] ? state : "unknown");
-}
-
-// GitHub OTA는 TLS에 큰 연속 메모리가 필요하다. 업로드 권한을 거두고 MQTT 세션이
-// 정리될 때까지(최대 15초) 기다린 뒤 flash 쓰기도 멈춘다. 호출 전에 loop 워치독은
-// 이미 해제돼 있어야 한다(DataChange의 github 분기).
-void BlackBoxOtaBegin()
-{
-  blackBoxOta = true;
-  has1blackbox::blackbox.log(has1blackbox::EventType::Recovery, 0, 0, 0, 0, "ota.github.check");
-  has1blackbox::blackbox.setUploadAllowed(false);
-  const uint32_t started = millis();
-  while (!has1blackbox::blackbox.uploadIdle() && uint32_t(millis() - started) < 15000)
-  {
-    delay(10);
-  }
-  has1blackbox::blackbox.setPaused(true);
-}
-
-// 업데이트가 없어 ota.check()가 돌아온 경우에만 온다(성공 시에는 재부팅).
-void BlackBoxOtaEnd()
-{
-  has1blackbox::blackbox.setPaused(false);
-  blackBoxOta = false;
+  // 게임이 시작되면 다음 250ms 주기를 기다리지 않고 바로 업로드를 닫는다.
+  if (kind == 0) BlackBoxUploadGate();
 }
 
 int BlackBoxDiagnosticsText(char *out, size_t cap)
 {
   const has1blackbox::Diagnostics d = has1blackbox::blackbox.diagnostics();
   return snprintf(out, cap,
+                  " heap=%lu heap_block=%lu ota_boot=%u"
                   " bb_ready=%u bb_status=%u bb_partition=%lu bb_flash_errors=%lu bb_uploaded=%lu"
                   " bb_upload_failures=%lu bb_dropped=%lu bb_core_state=%u bb_core_pc=0x%08lx",
+                  static_cast<unsigned long>(ESP.getFreeHeap()),
+                  static_cast<unsigned long>(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)),
+                  OtaLeanBoot() ? 1u : 0u,
                   d.ready ? 1u : 0u, static_cast<unsigned>(d.ringStatus),
                   static_cast<unsigned long>(d.partitionSize),
                   static_cast<unsigned long>(d.flashErrors), static_cast<unsigned long>(d.uploaded),
@@ -168,10 +150,14 @@ void NeoFlushPending(uint32_t waitMs)
     if (uint32_t(millis() - started) >= waitMs) break;
     delay(1);
   }
+  int32_t forced = 0;
   for (size_t i = 0; i < NEO_STRIP_COUNT; ++i)
   {
     if (!neo_pending[i]) continue;
     neo_pending[i] = false;
     neo_strips[i]->show();
+    ++forced;
   }
+  // 가드 없이 보낸 프레임은 깨졌을 수 있다 - 일어났다는 사실을 남긴다.
+  BlackBoxAltar("altar.led.forced", forced, (int32_t)waitMs, 0, 0);
 }

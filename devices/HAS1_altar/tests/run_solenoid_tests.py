@@ -116,6 +116,10 @@ void BlackBoxAltar(const char* label, int32_t a, int32_t, int32_t, int32_t) {
 void NeoSceneOff() { events.push_back("leds_off"); }
 void NeoSceneRestore() { assert(solenoid == LOW); events.push_back("leds_on"); }
 void CrashReportInit() { events.push_back("crash_init"); }
+// Normal boot: the OTA-only boot (no logger, no BLE) is decided before the purge.
+bool ota_boot_checked = false;
+void OtaBootInit() { assert(opens == 0 && !blackbox_started); ota_boot_checked = true; }
+bool OtaLeanBoot() { assert(ota_boot_checked); return false; }
 void LogMemoryStats(const char*) {}
 void TempleInit() {
     // Boot purge must finish before Wi-Fi/RFID initialization can block.
