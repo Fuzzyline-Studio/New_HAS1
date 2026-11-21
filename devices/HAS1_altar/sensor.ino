@@ -10,7 +10,6 @@ static unsigned long tag_start_time = 0;
 static String pending_tagger_device_name = "";
 static bool ir_chip_pending = false;          // IR센서가 칩을 감지해서 크랭크 대기 중
 static bool ir_chip_confirm_animated = false; // 이 칩(ir_chip_pending 세션)에 대해 OnTagChipConfirmed(애니메이션)를 이미 실행했는지
-static bool pending_success_sound = false;    // (1,1) 성공음을 마이크로스위치 클릭까지 대기
 // 술래가 훔친 칩을 반납하는 기존 메커닉(아래 두번째 분기)도 태그가 붙어있는 동안
 // 디바운스 없이 매초(RfidLoop 폴링 주기) 블로킹 HTTP 3개(has2wifi.Send)를 반복
 // 발사했었다 - 그동안 loop()가 막혀 MicroSw 클릭을 놓치는 원인이 됐다. 한 번만
@@ -46,14 +45,11 @@ void OnTagChipConfirmed()
 void RunAltarSuccess()
 {
   Serial.println("[Altar] Crank turned -> requesting taken_chip +1 before solenoid opens");
+  const unsigned long count_started = millis();
+  BlackBoxAltar("altar.count.begin", 0, 0, 0, 0);
   has2wifi.Send((String)(const char *)my["device_name"], "taken_chip", "+1");
-
-  // (1,1) 성공음은 activate(생명칩 바치는 루틴)일 때만 - blink(술래 활성화)에서는
-  // 마이크로스위치가 눌려도 재생하지 않는다.
-  if ((String)(const char *)my["device_state"] == "activate")
-  {
-    pending_success_sound = true;
-  }
+  // Send()는 결과를 돌려주지 않는다 - 걸린 시간만 남긴다(서버 반영 여부의 증거가 아님).
+  BlackBoxAltar("altar.count.end", (int32_t)(millis() - count_started), 0, 0, 0);
 }
 
 //****************************************** Initialize ******************************************
@@ -81,16 +77,19 @@ void SensorInit()
   else
   {
     Serial.println("!!!RFID connect failed!!! - will keep retrying in loop()");
-    has2wifi.Send((String)(const char *)my["device_name"], "device_state", "PN532");
+    // 서버가 github을 지시한 상태면 보고하지 않는다: device_state를 덮어쓰면 OTA 전용
+    // 부팅이 github을 못 보고 정상 부팅으로 돌아가 OTA가 취소된다(리더가 죽은 제단이야말로
+    // 펌웨어를 받아야 한다). OTA 전용 부팅에서도 같은 이유로 보내지 않는다.
+    if (!OtaLeanBoot() && (String)(const char *)my["device_state"] != "github")
+    {
+      has2wifi.Send((String)(const char *)my["device_name"], "device_state", "PN532");
+    }
     rfid_recovery.recordFailure(millis());
   }
 
   // 솔레노이드는 setup()에서 초기화/부팅 배출 완료. IR / Micro Switch init
   IrSensorInit();
   MicroSwInit();
-
-  // DFPlayer init (내부에 2초 blocking delay가 있어 맨 마지막에 호출)
-  Mp3_Init();
 }
 
 //********************************************* Rfid *********************************************
@@ -219,6 +218,7 @@ void RequestRfidReinit(const char *reason)
   rfid_fault_reason = reason;
   rfid_recovery.request(millis());
   RfidReportEvent("reinit_requested", reason, 0);
+  BlackBoxAltar("altar.rfid.reinit", 0, 0, 0, 0);
 }
 
 /**
@@ -236,6 +236,7 @@ void RfidMaintain(void)
     unsigned fails = rfid_recovery.failureCount();
     rfid_recovery.recordSuccess();
     RfidReportEvent("recovered", rfid_fault_reason, fails);
+    BlackBoxAltar("altar.rfid.recovered", (int32_t)fails, 0, 0, 0);
     // 부팅 때 실패해서 우리가 PN532 상태를 보냈던 경우에만 되돌린다(게임 중 상태는 건드리지 않음).
     if ((String)(const char *)my["device_state"] == "PN532")
     {
@@ -366,6 +367,7 @@ void RfidLoop()
   if (!tag_present && tag_active)
   {
     Serial.println("[RFID] Tag left reader - reset, ignored");
+    BlackBoxAltar("altar.tag.left", rfid_recovery.ready(), 0, 0, 0);
     tag_active = false;
   }
   // 태그가 리더에서 떠났으면 반납 처리 게이트도 같이 리셋 (다음에 다시 태그하면 재처리 가능해야 함).
@@ -398,8 +400,13 @@ void CardChecking(uint8_t rfidData[RFID_PAGE_DATA_SIZE]) // 어떤 카드가 들
   // 한 번만 조회한다(반복 조회 시 블로킹 HTTP로 MicroSw 클릭을 놓치는 문제 방지).
   if (!tag_data_fetched)
   {
+    const unsigned long fetch_started = millis();
     has2wifi.Receive(tagUser);
     tag_data_fetched = true;
+    // 플레이어 이름은 남기지 않는다: 조회에 걸린 시간, 술래 여부, 제단 game_state만.
+    BlackBoxAltar("altar.tag.fetch", (int32_t)(millis() - fetch_started),
+                  (String)(const char *)tag["role"] == "tagger",
+                  (String)(const char *)my["game_state"] == "activate", 0);
   }
 
   // 2. 술래 태그 확인 - device_state/서버 호출 없이 내부 플래그만 세운다.
@@ -412,6 +419,7 @@ void CardChecking(uint8_t rfidData[RFID_PAGE_DATA_SIZE]) // 어떤 카드가 들
       tag_start_time = millis();
       pending_tagger_device_name = (String)(const char *)tag["device_name"];
       Serial.println("[Altar] Tagger tag detected, waiting for chip insertion: " + pending_tagger_device_name);
+      BlackBoxAltar("altar.tag.active", ir_chip_pending, 0, 0, 0);
 
       // 칩이 태그보다 먼저 감지돼서 이미 대기 중이었다면(RFID는 ~1초마다만 폴링돼서
       // IR감지가 먼저 올 수 있음), 지금 태그로 뒤늦게 완성된 것 - 확인 애니메이션만
@@ -502,11 +510,11 @@ void applyBrightness()
   pixels_side.setBrightness(brightness);
   pixels_square2.setBrightness(brightness);
   pixels_pn532.setBrightness(brightness);
-  pixels_square.show();
-  pixels_round.show();
-  pixels_side.show();
-  pixels_square2.show();
-  pixels_pn532.show();
+  NeoShow(pixels_square);
+  NeoShow(pixels_round);
+  NeoShow(pixels_side);
+  NeoShow(pixels_square2);
+  NeoShow(pixels_pn532);
 }
 
 // pixels_square2(두번째 사각 링)/pixels_pn532(태그 지점 링)는 물리적으로 각각
@@ -515,7 +523,7 @@ void applyBrightness()
 void lightColor(Adafruit_NeoPixel &pixels, int color[3])
 {
   pixels.fill(pixels.Color(color[0], color[1], color[2]));
-  pixels.show();
+  NeoShow(pixels);
   if (&pixels == &pixels_square) lightColor(pixels_square2, color);
   else if (&pixels == &pixels_round) lightColor(pixels_pn532, color);
 }
@@ -523,7 +531,7 @@ void lightColor(Adafruit_NeoPixel &pixels, int color[3])
 void lightColor(Adafruit_NeoPixel &pixels, int color[3], int index)
 {
   pixels.setPixelColor(index, color[0], color[1], color[2]);
-  pixels.show();
+  NeoShow(pixels);
   if (&pixels == &pixels_round) lightColor(pixels_pn532, color, index % NUMPIXELS_PN532);
   else if (&pixels == &pixels_square) lightColor(pixels_square2, color, index);
 }
@@ -543,7 +551,7 @@ void ClearRound()
 void lightRgb(Adafruit_NeoPixel &pixels, int r, int g, int b)
 {
   pixels.fill(pixels.Color(r, g, b));
-  pixels.show();
+  NeoShow(pixels);
   if (&pixels == &pixels_square) lightRgb(pixels_square2, r, g, b);
   else if (&pixels == &pixels_round) lightRgb(pixels_pn532, r, g, b);
 }
@@ -575,16 +583,18 @@ static void NeoAnimReset()
 // 고정된다 - 플레이어가 태그+칩 직후 바로 크랭크를 돌리면 확인 연출이 도중에 얼어붙은
 // 채 2초를 보내고 남은 칸부터 이어져 어색했고, 솔레노이드와 LED 전류가 그 2초 동안 겹쳤다.
 // 통전 직전에 모든 스트립을 끄고(피크 전류 최소화 + 의도된 암전), 통전이 끝나면 현재 서버
-// 상태의 기본 화면으로 되돌린다. 별도 성공 연출은 두지 않는다(성공음은 기존대로 복귀 뒤).
+// 상태의 기본 화면으로 되돌린다. 별도 성공 연출은 두지 않는다.
 void NeoSceneOff()
 {
   NeoFunc = NeoNo; // 진행 중이던 연출 중단 - 복귀 시 상태별 기본 연출로 다시 지정한다
   NeoAnimReset();
-  pixels_round.clear();   pixels_round.show();
-  pixels_pn532.clear();   pixels_pn532.show();
-  pixels_square.clear();  pixels_square.show();
-  pixels_square2.clear(); pixels_square2.show();
-  pixels_side.clear();    pixels_side.show();
+  pixels_round.clear();   NeoShow(pixels_round);
+  pixels_pn532.clear();   NeoShow(pixels_pn532);
+  pixels_square.clear();  NeoShow(pixels_square);
+  pixels_square2.clear(); NeoShow(pixels_square2);
+  pixels_side.clear();    NeoShow(pixels_side);
+  // 암전은 통전 전에 반드시 나가야 한다 - 블랙박스 flash 쓰기에 밀린 스트립을 마저 보낸다.
+  NeoFlushPending(100);
 }
 
 // DataChange()의 상태 진입 처리와 같은 화면으로 되돌린다 (그쪽을 바꾸면 여기도 맞출 것).
@@ -680,7 +690,7 @@ void NeoGaming()
   // DataChange()에서 activate 진입 시 한 번만 고정해두는 것으로 바꿨음) — 그래서
   // 여기서는 round만 직접 갱신하고 pn532는 건드리지 않는다.
   pixels_round.fill(pixels_round.Color(purple[0], purple[1], purple[2]));
-  pixels_round.show();
+  NeoShow(pixels_round);
   lightColor(pixels_square, purple); // square + square2
 }
 
@@ -708,11 +718,11 @@ void NeoChipGaugeBlink()
   {
     step = 0;
     pixels_round.clear();
-    pixels_round.show();
+    NeoShow(pixels_round);
     pixels_square.clear();
-    pixels_square.show();
+    NeoShow(pixels_square);
     pixels_square2.clear();
-    pixels_square2.show();
+    NeoShow(pixels_square2);
     NeoFunc = NeoTagger; // blink 상태의 기본 연출로 복귀
   }
 }
@@ -738,11 +748,11 @@ void NeoChipBlinkActivate()
     // pixels_round/pixels_square를 직접 clear해서(ClearRound/ClearSquare 안 씀)
     // pn532는 건드리지 않고 보라색 그대로 유지한다.
     pixels_round.clear();
-    pixels_round.show();
+    NeoShow(pixels_round);
     pixels_square.clear();
-    pixels_square.show();
+    NeoShow(pixels_square);
     pixels_square2.clear();
-    pixels_square2.show();
+    NeoShow(pixels_square2);
   }
   on = !on;
 
@@ -811,9 +821,11 @@ void SolenoidOff()
 void SolenoidPulse()
 {
   // 통전 중에는 센서/네트워크 처리를 멈추고, 지연이 끝나면 직접 출력을 끈다.
+  BlackBoxAltar("altar.solenoid.on", SOLENOID_PULSE_MS, 0, 0, 0);
   SolenoidOn();
   delay(SOLENOID_PULSE_MS);
   SolenoidOff();
+  BlackBoxAltar("altar.solenoid.off", 0, 0, 0, 0);
 }
 
 //****************************************** IR Sensor *******************************************
@@ -841,9 +853,15 @@ void IrSensorLoop()
   {
     stable = raw;
     lockout_until_ms = millis() + IR_SENSOR_DEBOUNCE_MS;
+    if (!stable)
+    {
+      // 센서가 다시 HIGH로 돌아옴 - 이게 안 찍히면 칩이 센서 앞에 걸려 다음 칩을 못 본다.
+      BlackBoxAltar("altar.ir.clear", ir_chip_pending, tag_active, 0, 0);
+    }
     if (stable)
     {
       Serial.println("[IrSensor] Chip detected");
+      BlackBoxAltar("altar.ir.chip", tag_active, ir_chip_pending, 0, 0);
       ir_chip_pending = true; // 솔레노이드 개방은 MicroSwLoop가 담당
       ir_chip_confirm_animated = false; // 새 칩 세션 시작
 
@@ -869,8 +887,7 @@ void IrSensorLoop()
 // 실제로 연다 - 태그 없이 칩만 넣고 돌리거나, 태그+칩이 한 번 확인된 뒤 태그를
 // 떼고서 돌리는 경우엔 열리지 않는다(태그가 이미 없으므로 tag_active가 false로
 // 리셋돼있음 - RfidLoop 참고). taken_chip+1 요청(RunAltarSuccess)은
-// setting_state가 아닐 때 개방 전에 보낸다. pending_success_sound가
-// 서있으면(태그+IR이 이미 확인된 상태) 이 시점에 성공음(1,1)을 재생한다.
+// setting_state가 아닐 때 개방 전에 보낸다.
 void MicroSwInit()
 {
   pinMode(MICRO_SW_PIN, INPUT);
@@ -888,6 +905,11 @@ void MicroSwLoop()
   {
     stable = raw;
     lockout_until_ms = millis() + MICRO_SW_DEBOUNCE_MS;
+    if (!stable)
+    {
+      // 스위치가 떼어짐 - 눌린 채 남으면 다음 회전의 클릭 엣지가 생기지 않는다.
+      BlackBoxAltar("altar.sw.release", ir_chip_pending, tag_active, 0, 0);
+    }
     if (stable)
     {
       Serial.println("[MicroSw] Click detected");
@@ -897,6 +919,9 @@ void MicroSwLoop()
       // 감지한 상태(ir_chip_pending)라면 마이크로스위치가 눌릴 때 바로 배출한다
       // (스태프가 세팅 중 넣어본 생명칩을 태그 없이 다시 꺼낼 수 있어야 함).
       bool setting_state = (String)(const char *)my["game_state"] == "setting";
+
+      // 무시되는 클릭도 전부 남긴다: 칩 감지 여부, 태그 유지 여부, setting 여부.
+      BlackBoxAltar("altar.sw.click", ir_chip_pending, tag_active, setting_state, 0);
 
       if (ir_chip_pending)
       {
@@ -923,14 +948,8 @@ void MicroSwLoop()
           }
           SolenoidPulse();
 
-          // 통전이 끝나면 현재 상태의 기본 화면으로 복귀. 성공음은 그 뒤에 재생한다.
+          // 통전이 끝나면 현재 상태의 기본 화면으로 복귀.
           NeoSceneRestore();
-
-          if (pending_success_sound)
-          {
-            Mp3PlayLargeFolder(1, 1); // 성공음 - 태그+IR+크랭크가 다 확인된 시점
-            pending_success_sound = false;
-          }
         }
         else
         {

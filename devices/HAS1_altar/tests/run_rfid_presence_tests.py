@@ -108,6 +108,16 @@ struct Reader {
   }
 } nfc;
 void CardChecking(uint8_t *);
+// Blackbox hook double: counts the reader/tag records RfidLoop and recovery request.
+int tag_left_records = 0, reinit_records = 0, recovered_records = 0;
+void BlackBoxAltar(const char *label, int32_t, int32_t, int32_t, int32_t) {
+  const std::string name = label;
+  assert(name.size() <= 27);
+  if (name == "altar.tag.left") ++tag_left_records;
+  else if (name == "altar.rfid.reinit") ++reinit_records;
+  else if (name == "altar.rfid.recovered") ++recovered_records;
+  else assert(!"unexpected blackbox record");
+}
 // PRODUCTION
 int card_checks = 0, fetches = 0, returns = 0;
 std::string checked_code;
@@ -261,6 +271,8 @@ int main() {
   now_ms = 10000; RfidMaintain(); assert(rfid_recovery.ready());
   poll(11000, {card("G1P3")});
   assert(checked_code == "G1P3" && fetches == 2 && returns == 2);
+  // Every reader fault that scheduled a re-init and every recovery left a record.
+  assert(reinit_records > 0 && recovered_records > 0 && tag_left_records > 0);
   std::cout << "PASS: altar production RFID presence, retries, debounce, gates, card replacement and reader recovery\n";
 }
 '''.replace('// PRODUCTION', constants + '\n' + state + '\n' +

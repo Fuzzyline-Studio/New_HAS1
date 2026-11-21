@@ -260,6 +260,11 @@ void BleAdvertiserInit()
   {
     return;
   }
+  // OTA 전용 부팅에서는 BLE 컨트롤러를 켜지 않는다 - GitHub TLS에 그 메모리가 필요하다.
+  if (OtaLeanBoot())
+  {
+    return;
+  }
 
   ADV_LOG("[ADV] init");
   // 컨트롤러 init/enable 은 Arduino 의 btStart() 에 위임한다.
@@ -363,6 +368,10 @@ static bool StartAdvertising()
 
 void BleAdvertiserUpdateFromDeviceName(const char *device_name)
 {
+  if (OtaLeanBoot())
+  {
+    return;
+  }
   if (device_name == nullptr || device_name[0] == '\0')
   {
     ADV_LOG("[ADV] missing device_name");
@@ -403,6 +412,10 @@ void BleAdvertiserUpdateFromDeviceName(const char *device_name)
 
 void BleAdvertiserMaintain()
 {
+  if (OtaLeanBoot())
+  {
+    return;
+  }
   if (!ble_adv_retry_pending || ble_adv_local_name[0] == '\0')
   {
     return;

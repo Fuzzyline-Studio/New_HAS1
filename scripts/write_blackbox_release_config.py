@@ -2,7 +2,7 @@
 """Generate the existing firmware secret header and public blackbox build metadata.
 
 No credential is printed or included in public metadata. Official glove TTGO /
-generator releases require MQTT; local flash-only builds remain supported.
+generator / altar releases require MQTT; local flash-only builds remain supported.
 """
 
 import argparse
@@ -15,7 +15,8 @@ import re
 from firmware_targets import TARGETS
 from write_firmware_secret import checked_secret
 
-PREFIXES = {"iotglove": "IOTGLOVE", "HAS1_generator": "HAS1_GENERATOR"}
+PREFIXES = {"iotglove": "IOTGLOVE", "HAS1_generator": "HAS1_GENERATOR",
+            "HAS1_altar": "HAS1_ALTAR"}
 PRIVATE_LAN = tuple(ipaddress.ip_network(value) for value in
                     ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"))
 
@@ -53,9 +54,9 @@ def configuration(device, mode="auto", broker=None, password=None, *, release=Fa
     if mode == "auto":
         mode = "mqtt" if device in PREFIXES else "flash"
     if release and device in PREFIXES and mode != "mqtt":
-        raise ValueError("Official glove/generator releases require MQTT blackbox; flash is local-only")
+        raise ValueError("Official glove/generator/altar releases require MQTT blackbox; flash is local-only")
     if mode == "mqtt" and device not in PREFIXES:
-        raise ValueError("MQTT blackbox is supported only for iotglove and HAS1_generator")
+        raise ValueError("MQTT blackbox is supported only for iotglove, HAS1_generator and HAS1_altar")
     uri = checked_broker(broker) if mode == "mqtt" else ""
     credential = checked_password(password) if mode == "mqtt" else ""
     defines = ""
@@ -73,7 +74,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--device", required=True, choices=TARGETS)
     parser.add_argument("--mode", default="auto", choices=("auto", "flash", "mqtt"))
-    parser.add_argument("--release", action="store_true", help="require MQTT for official glove/generator releases")
+    parser.add_argument("--release", action="store_true", help="require MQTT for official glove/generator/altar releases")
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[1])
     parser.add_argument("--public-config", required=True, type=Path)
     args = parser.parse_args()

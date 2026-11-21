@@ -594,7 +594,8 @@ bool BlackBox::begin(const Config &c) {
   if (started)
     return false;
   if (!c.device || (std::strcmp(c.device, "iotglove") &&
-                    std::strcmp(c.device, "HAS1_generator")))
+                    std::strcmp(c.device, "HAS1_generator") &&
+                    std::strcmp(c.device, "HAS1_altar")))
     return false;
   if (c.brokerUri && std::strlen(c.brokerUri) >= sizeof(broker))
     return false;

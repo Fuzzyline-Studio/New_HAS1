@@ -30,6 +30,7 @@ defines += "\n" + re.search(
 
 prefix = r'''
 #include <cassert>
+#include <cstdint>
 #include <iostream>
 #include <map>
 #include <string>
@@ -46,7 +47,7 @@ std::vector<std::string> events;
 unsigned long now = 10000, opened_at = 0;
 int ir = HIGH, micro = HIGH, solenoid = LOW, sends = 0, opens = 0;
 bool tag_active = false, ir_chip_pending = false;
-bool ir_chip_confirm_animated = false, pending_success_sound = false;
+bool ir_chip_confirm_animated = false;
 bool transport_failed = false;
 unsigned long millis() { return now; }
 void pinMode(int pin, int mode) {
@@ -87,16 +88,34 @@ struct Log {
     template<class T> void println(T) {}
     template<class... T> void printf(const char*, T...) {}
 } Serial, SerialMirror;
-void Mp3PlayLargeFolder(int folder, int track) {
-    assert(folder == 1 && track == 1 && solenoid == LOW);
-    events.push_back("sound");
-}
 void OnTagChipConfirmed() {}
+// Blackbox hooks: every record is requested while the solenoid is de-energized,
+// and the count request is bracketed before the pulse. Logging never opens it.
+std::vector<std::string> blackbox;
+bool blackbox_started = false;
+void BlackBoxBegin() {
+    // The journal starts before the boot purge so the purge itself is recorded.
+    assert(opens == 0 && solenoid == LOW && !blackbox_started);
+    blackbox_started = true;
+}
+void BlackBoxAltar(const char* label, int32_t a, int32_t, int32_t, int32_t) {
+    assert(solenoid == LOW);
+    String name = label;
+    assert(name.size() <= 27);
+    if (name == "altar.count.begin") assert(blackbox.back() == "altar.sw.click");
+    if (name == "altar.count.end") assert(a == 5000 && blackbox.back() == "altar.count.begin");
+    if (name == "altar.solenoid.on") assert(a == SOLENOID_PULSE_MS);
+    blackbox.push_back(name);
+}
 // LED blackout around the pulse: off must come before the (blocking) send and the pulse,
-// restore must come after the pulse and before the success sound.
+// restore must come after the pulse. No success sound: the DFPlayer was removed.
 void NeoSceneOff() { events.push_back("leds_off"); }
 void NeoSceneRestore() { assert(solenoid == LOW); events.push_back("leds_on"); }
 void CrashReportInit() { events.push_back("crash_init"); }
+// Normal boot: the OTA-only boot (no logger, no BLE) is decided before the purge.
+bool ota_boot_checked = false;
+void OtaBootInit() { assert(opens == 0 && !blackbox_started); ota_boot_checked = true; }
+bool OtaLeanBoot() { assert(ota_boot_checked); return false; }
 void LogMemoryStats(const char*) {}
 void TempleInit() {
     // Boot purge must finish before Wi-Fi/RFID initialization can block.
@@ -109,6 +128,9 @@ void DataChange() { events.push_back("data_change"); }
 tests = r'''
 void expect(std::initializer_list<std::string> expected) {
     assert(events == std::vector<std::string>(expected));
+}
+void expectBlackbox(std::initializer_list<std::string> expected) {
+    assert(blackbox == std::vector<std::string>(expected));
 }
 void detectChip() {
     ir = LOW;
@@ -127,16 +149,21 @@ int main(int argc, char** argv) {
         expect({"init", "off", "delay:1000", "crash_init", "on", "delay:2000",
                 "off", "temple_init", "data_change"});
         assert(sends == 0 && opens == 1 && !ir_chip_pending && !tag_active);
+        assert(blackbox_started);
+        expectBlackbox({"altar.solenoid.on", "altar.solenoid.off"});
     } else if (scenario == "no_chip") {
         tag_active = true;
         crank();
         expect({});
         assert(sends == 0 && opens == 0);
+        // An ignored click is still recorded.
+        expectBlackbox({"altar.sw.click"});
     } else if (scenario == "no_tag") {
         detectChip();
         crank();
         expect({});
         assert(sends == 0 && opens == 0 && ir_chip_pending);
+        expectBlackbox({"altar.ir.chip", "altar.sw.click"});
     } else if (scenario == "setting" || scenario == "setting_stale_tag") {
         my["game_state"] = "setting";
         tag_active = scenario == "setting_stale_tag";
@@ -144,20 +171,21 @@ int main(int argc, char** argv) {
         crank();
         expect({"leds_off", "on", "delay:2000", "off", "leds_on"});
         assert(sends == 0 && opens == 1 && !ir_chip_pending);
+        expectBlackbox({"altar.ir.chip", "altar.sw.click", "altar.solenoid.on", "altar.solenoid.off"});
     } else {
         tag_active = true;
         transport_failed = scenario == "send_failed";
         if (scenario == "blink") my["device_state"] = "blink";
         detectChip();
         crank();
-        if (scenario == "blink") {
-            expect({"leds_off", "send", "send_returned", "on", "delay:2000", "off", "leds_on"});
-        } else if (transport_failed) {
-            expect({"leds_off", "send", "send_failed", "on", "delay:2000", "off", "leds_on", "sound"});
+        if (transport_failed) {
+            expect({"leds_off", "send", "send_failed", "on", "delay:2000", "off", "leds_on"});
         } else {
-            expect({"leds_off", "send", "send_returned", "on", "delay:2000", "off", "leds_on", "sound"});
+            expect({"leds_off", "send", "send_returned", "on", "delay:2000", "off", "leds_on"});
         }
-        assert(sends == 1 && opens == 1 && !ir_chip_pending && !pending_success_sound);
+        assert(sends == 1 && opens == 1 && !ir_chip_pending);
+        expectBlackbox({"altar.ir.chip", "altar.sw.click", "altar.count.begin", "altar.count.end",
+                        "altar.solenoid.on", "altar.solenoid.off"});
         if (scenario == "held_switch") {
             // A new chip while the crank switch stays pressed must not count again.
             ir = HIGH; IrSensorLoop();
@@ -165,7 +193,10 @@ int main(int argc, char** argv) {
             detectChip();
             for (int i = 0; i < 5; ++i) { now += 1000; MicroSwLoop(); }
             assert(sends == 1 && opens == 1 && ir_chip_pending);
+            // No second click edge while the switch stays pressed.
+            assert(blackbox.back() == "altar.ir.chip");
             micro = HIGH; MicroSwLoop();
+            assert(blackbox.back() == "altar.sw.release");
             now += MICRO_SW_DEBOUNCE_MS + 1;
             crank();
             assert(sends == 2 && opens == 2 && !ir_chip_pending);

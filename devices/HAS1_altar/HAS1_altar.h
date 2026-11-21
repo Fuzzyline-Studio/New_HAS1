@@ -31,6 +31,8 @@ void ActionFunc();
 void DataChange();
 void CrashReportInit();
 void CrashReportSend(const char *device_name);
+void OtaBootInit();
+bool OtaLeanBoot();
 
 //* =============================== Sensor =============================== *
 /**
@@ -57,10 +59,6 @@ void IrSensorLoop();
 // 회전 메커니즘이 한바퀴 돌면 눌림 → 솔레노이드 개방 트리거 (sensor.ino)
 void MicroSwInit();
 void MicroSwLoop();
-
-//=============================== DFPlayer (MP3) ============================
-void Mp3_Init();
-void Mp3PlayLargeFolder(uint8_t folder_number, uint16_t file_number);
 
 //================================ RFID ==================================
 Adafruit_PN532 nfc(PN532_SCK, PN532_MISO, PN532_MOSI, PN532_SS);

@@ -603,6 +603,10 @@ void protocol() {
   }
   assert(encodeBatch(b, "HAS1_generator", "AABBCCDDEEFF", payload,
                      sizeof(payload)) < 4096);
+  assert(encodeBatch(b, "HAS1_altar", "AABBCCDDEEFF", payload,
+                     sizeof(payload)) < 4096);
+  assert(!encodeBatch(b, "HAS1_duct", "AABBCCDDEEFF", payload,
+                      sizeof(payload)));
   b.count = 17;
   assert(!encodeBatch(b, "iotglove", "AABBCCDDEEFF", payload, sizeof(payload)));
   assert(backoffMs(0) == 5000 && backoffMs(4) == 60000);
