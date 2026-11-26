@@ -10,13 +10,19 @@ struct Batch {
   size_t count = 0;
   Record records[BatchRecords]{};
 };
+// Device tokens the collector accepts in a batch header.
+inline bool knownDevice(const char *device) {
+  return device && (!std::strcmp(device, "iotglove") ||
+                    !std::strcmp(device, "HAS1_generator") ||
+                    !std::strcmp(device, "HAS1_altar") ||
+                    !std::strcmp(device, "HAS3_tagmachine"));
+}
 inline size_t encodeBatch(const Batch &batch, const char *device,
                           const char *mac, char *out, size_t cap) {
   if (!batch.count || batch.count > BatchRecords || !device || !mac ||
       std::strlen(mac) != 12)
     return 0;
-  if (std::strcmp(device, "iotglove") && std::strcmp(device, "HAS1_generator") &&
-      std::strcmp(device, "HAS1_altar"))
+  if (!knownDevice(device))
     return 0;
   for (size_t i = 0; i < 12; ++i)
     if (!((mac[i] >= '0' && mac[i] <= '9') || (mac[i] >= 'A' && mac[i] <= 'F')))

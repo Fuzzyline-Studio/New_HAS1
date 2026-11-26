@@ -676,6 +676,228 @@ void mqttIdentity() {
   assert(!resolveMqttUsername(nullptr,nullptr,mac)[0]);
   assert(!resolveMqttUsername(nullptr,"mqtt://127.0.0.1:1883",nullptr)[0]);
 }
+// Opt-in large partition: the default 4 MB scheme's 1.4 MiB spiffs
+// (0x170000 = 368 sectors) on a tag machine. Records every offset touched.
+constexpr size_t Default4M = 0x170000;
+struct Tracked : Memory {
+  size_t highestRead = 0, highestWrite = 0, highestErase = 0;
+  unsigned readsBeyond = 0;
+  Tracked() { data.assign(Default4M, 255); }
+  bool read(size_t o, uint8_t *b, size_t n) override {
+    highestRead = std::max(highestRead, o + n);
+    if (o + n > Ring::Size)
+      ++readsBeyond;
+    return Memory::read(o, b, n);
+  }
+  bool write(size_t o, const uint8_t *b, size_t n) override {
+    highestWrite = std::max(highestWrite, o + n);
+    return Memory::write(o, b, n);
+  }
+  bool erase(size_t o, size_t n) override {
+    highestErase = std::max(highestErase, o + n);
+    return Memory::erase(o, n);
+  }
+  void resetCounters() {
+    highestRead = highestWrite = highestErase = 0;
+    readsBeyond = 0;
+    writes = erases = 0;
+  }
+};
+bool sameBeyondRing(const Memory &f, const std::vector<uint8_t> &before) {
+  return f.data.size() == before.size() &&
+         std::equal(f.data.begin() + Ring::Size, f.data.end(),
+                    before.begin() + Ring::Size);
+}
+void largePartition() {
+  static_assert(Ring::LargeMaxSize == 0x200000, "2 MiB cap");
+  static_assert(Ring::maxSize(false) == Ring::MaxSize, "default unchanged");
+  // Off (the default): exactly the previous size gate.
+  for (bool explicitOff : {false, true}) {
+    Tracked off;
+    Ring r(off);
+    assert(!(explicitOff ? r.begin(1, false) : r.begin(1)));
+    assert(r.status() == RingStatus::BadSize);
+    assert(off.erases == 0 && off.writes == 0);
+  }
+  // On, blank: ready without any erase; nothing beyond the ring is written or
+  // erased across appends, ACKed recycling and unACKed (LOST) recycling.
+  Tracked blank;
+  Ring r(blank);
+  assert(r.begin(0x51, true) && r.status() == RingStatus::Ready);
+  assert(blank.erases == 0 && blank.highestRead == Default4M);
+  Record e;
+  for (size_t i = 0; i < Ring::Slots; ++i) {
+    e = event();
+    assert(r.append(e) == AppendResult::Persisted);
+  }
+  assert(r.acknowledge(64));
+  e = event();
+  assert(r.append(e) == AppendResult::Persisted); // ACKed sector recycled
+  for (size_t i = 0; i < 2 * Ring::Slots; ++i) {
+    e = event();
+    assert(r.append(e) == AppendResult::Persisted);
+  }
+  assert(r.lostRecords() > 0); // oldest-sector overwrite happened
+  assert(blank.erases > 0);
+  assert(blank.highestWrite <= Ring::Size && blank.highestErase <= Ring::Size);
+  assert(std::all_of(blank.data.begin() + Ring::Size, blank.data.end(),
+                     [](uint8_t b) { return b == 255; }));
+  // Reopen: metadata is found; nothing beyond the ring is even read.
+  blank.resetCounters();
+  Ring reboot(blank);
+  assert(reboot.begin(0, true) && reboot.id() == 0x51);
+  assert(blank.readsBeyond == 0 && blank.highestRead <= Ring::Size);
+  assert(blank.writes == 0 && blank.erases == 0);
+  // The same ring opened without the option is refused, not reinitialized.
+  Ring withoutOption(blank);
+  assert(!withoutOption.begin(1) &&
+         withoutOption.status() == RingStatus::BadSize);
+  assert(blank.writes == 0 && blank.erases == 0);
+
+  // On, empty SPIFFS over all 368 blocks: only the 32 ring sectors are
+  // erased; the magics beyond the ring stay byte-for-byte.
+  Tracked formatted;
+  formatSpiffs(formatted, Default4M / Ring::Sector);
+  auto before = formatted.data;
+  Ring retry(formatted);
+  assert(!retry.begin(0, true) && retry.status() == RingStatus::Unopened);
+  assert(formatted.data == before && formatted.erases == 0);
+  Ring adopted(formatted);
+  assert(adopted.begin(0x52, true) && adopted.status() == RingStatus::Ready);
+  assert(formatted.erases == Ring::Size / Ring::Sector);
+  assert(formatted.highestErase == Ring::Size &&
+         formatted.highestWrite <= Ring::Size);
+  assert(sameBeyondRing(formatted, before));
+  e = event();
+  assert(adopted.append(e) == AppendResult::Persisted);
+  formatted.resetCounters();
+  Ring reopened(formatted);
+  assert(reopened.begin(0, true) && reopened.id() == 0x52);
+  assert(formatted.readsBeyond == 0 && formatted.erases == 0);
+  // With erase counts stored after each magic, as SPIFFS also writes.
+  Tracked counted;
+  formatSpiffs(counted, Default4M / Ring::Sector);
+  for (size_t s = 0; s < Default4M / Ring::Sector; ++s)
+    counted.data[s * Ring::Sector + 254] = counted.data[s * Ring::Sector + 255] = 0;
+  before = counted.data;
+  Ring withCount(counted);
+  assert(withCount.begin(0x53, true));
+  assert(counted.erases == Ring::Size / Ring::Sector);
+  assert(sameBeyondRing(counted, before));
+
+  // A file-like byte inside the ring region or anywhere beyond it, on a blank
+  // or a formatted partition: ForeignData with zero erases and writes.
+  for (bool spiffs : {false, true})
+    for (size_t offset : {size_t(Ring::Data + 100), size_t(Ring::Size - 1),
+                          size_t(Ring::Size), size_t(200 * Ring::Sector + 17),
+                          size_t(Default4M - 1)}) {
+      Tracked foreign;
+      if (spiffs)
+        formatSpiffs(foreign, Default4M / Ring::Sector);
+      foreign.data[offset] = 0x42;
+      auto kept = foreign.data;
+      Ring refused(foreign);
+      assert(!refused.begin(1, true) &&
+             refused.status() == RingStatus::ForeignData);
+      assert(foreign.data == kept && foreign.erases == 0 && foreign.writes == 0);
+    }
+  // An inconsistent magic far beyond the ring is foreign too.
+  Tracked mixed;
+  formatSpiffs(mixed, Default4M / Ring::Sector);
+  const uint16_t other = uint16_t(0x20140529u ^ 256u ^ (300u - 250u));
+  mixed.data[250 * Ring::Sector + 252] = uint8_t(other);
+  mixed.data[250 * Ring::Sector + 253] = uint8_t(other >> 8);
+  auto mixedBefore = mixed.data;
+  Ring inconsistent(mixed);
+  assert(!inconsistent.begin(1, true) &&
+         inconsistent.status() == RingStatus::ForeignData);
+  assert(mixed.data == mixedBefore && mixed.erases == 0);
+
+  // Power cut during the one-time ring erase (after N whole sectors, or part
+  // way through the next sector before its magic was cleared) or after it,
+  // before the first checkpoint: the next boot still sees an unused partition
+  // and finishes.
+  for (size_t sectors : {size_t(0), size_t(1), size_t(5), size_t(31), size_t(32)})
+    for (int partial : {-1, 0, 128}) {
+      if (sectors == 32 && partial >= 0)
+        continue;
+      Tracked cut;
+      formatSpiffs(cut, Default4M / Ring::Sector);
+      before = cut.data;
+      std::fill(cut.data.begin(), cut.data.begin() + sectors * Ring::Sector, 255);
+      if (partial >= 0)
+        std::fill(cut.data.begin() + sectors * Ring::Sector,
+                  cut.data.begin() + sectors * Ring::Sector + partial, 255);
+      Ring resumed(cut);
+      assert(resumed.begin(0x60 + sectors, true));
+      assert(resumed.status() == RingStatus::Ready);
+      assert(cut.erases == (sectors == 32 ? 0u : Ring::Size / Ring::Sector));
+      assert(sameBeyondRing(cut, before));
+      e = event();
+      assert(resumed.append(e) == AppendResult::Persisted);
+      Ring again(cut);
+      assert(again.begin(0, true) && again.id() == 0x60 + sectors);
+    }
+  // An erase fault during the ring erase leaves the rest untouched and the
+  // partition still adoptable on a later boot.
+  for (int limit : {0, 1024}) {
+    Tracked faulty;
+    formatSpiffs(faulty, Default4M / Ring::Sector);
+    before = faulty.data;
+    faulty.eraseLimit = limit;
+    Ring broken(faulty);
+    assert(!broken.begin(1, true) && broken.status() == RingStatus::EraseError);
+    assert(sameBeyondRing(faulty, before) && faulty.writes == 0);
+    faulty.eraseLimit = -1;
+    Ring later(faulty);
+    assert(later.begin(2, true) && sameBeyondRing(faulty, before));
+  }
+
+  // Size gate with the option on.
+  for (size_t bytes : {Default4M + 100, size_t(Ring::LargeMaxSize + Ring::Sector),
+                       size_t(Ring::Size - Ring::Sector)}) {
+    Tracked odd;
+    odd.data.assign(bytes, 255);
+    Ring sized(odd);
+    assert(!sized.begin(1, true) && sized.status() == RingStatus::BadSize);
+    assert(odd.erases == 0 && odd.writes == 0);
+  }
+  Tracked cap;
+  cap.data.assign(Ring::LargeMaxSize, 255);
+  Ring atCap(cap);
+  assert(atCap.begin(1, true) && cap.highestWrite <= Ring::Size);
+  // Up to MaxSize the option changes nothing: a formatted 192 KiB partition
+  // is still erased and verified whole.
+  Tracked legacy;
+  legacy.data.assign(Legacy, 255);
+  formatSpiffs(legacy, 48);
+  Ring legacyOn(legacy);
+  assert(legacyOn.begin(3, true));
+  assert(legacy.erases == Legacy / Ring::Sector);
+  assert(std::all_of(legacy.data.begin() + Ring::Size, legacy.data.end(),
+                     [](uint8_t b) { return b == 255; }));
+}
+void tagmachineToken() {
+  assert(knownDevice("HAS3_tagmachine") && knownDevice("iotglove") &&
+         knownDevice("HAS1_generator") && knownDevice("HAS1_altar"));
+  assert(!knownDevice(nullptr) && !knownDevice("") &&
+         !knownDevice("HAS3_TAGMACHINE") && !knownDevice("tagmachine") &&
+         !knownDevice("HAS3_tagmachine "));
+  Batch b;
+  b.ring = 0x1234;
+  b.token = 0xdeadbeef;
+  b.count = 1;
+  b.records[0] = event();
+  b.records[0].sequence(7);
+  char payload[4096];
+  auto n = encodeBatch(b, "HAS3_tagmachine", "2CBCBBA7C18C", payload,
+                       sizeof(payload));
+  assert(n > 128 && n < 4096);
+  const char *head = "BB1 HAS3_tagmachine 2CBCBBA7C18C 0000000000001234 deadbeef\n";
+  assert(std::strncmp(payload, head, std::strlen(head)) == 0);
+  assert(!encodeBatch(b, "HAS3_unknown", "2CBCBBA7C18C", payload,
+                      sizeof(payload)));
+}
 int main() {
   mqttIdentity();
   evidence();
@@ -692,5 +914,7 @@ int main() {
   legacyPartition();
   statusCodes();
   protocol();
+  largePartition();
+  tagmachineToken();
   std::cout << "blackbox core: all fault and protocol tests passed\n";
 }

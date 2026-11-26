@@ -14,7 +14,8 @@ enum class AppendResult { Persisted, Failed, Uncertain, Full, Unavailable };
 enum class RingStatus : uint8_t {
   Unopened,         // begin() not run, or a fresh partition without identity
   Ready,
-  BadSize,          // partition smaller than Size or not whole sectors
+  BadSize,          // partition smaller than Size, above the cap or not
+                    // whole sectors
   ReadError,
   MetadataConflict, // two ring identities, or one generation twice
   ForeignData,      // unknown content (possibly a file); left untouched
@@ -26,15 +27,25 @@ enum class RingStatus : uint8_t {
 class Ring {
 public:
   static constexpr size_t Sector = 4096, Size = 131072, Slots = 1920,
-                          Data = 8192, MaxSize = 196608;
+                          Data = 8192, MaxSize = 196608, LargeMaxSize = 0x200000;
   explicit Ring(Flash &f) : f_(f) {}
+  // Largest accepted partition: MaxSize, or LargeMaxSize after the opt-in.
+  static constexpr size_t maxSize(bool largePartition) {
+    return largePartition ? LargeMaxSize : MaxSize;
+  }
   // The ring occupies the first Size bytes. Up to MaxSize (the 192 KiB spiffs
   // of the Arduino 2.x min_spiffs layout) is accepted; the remainder is only
   // ever checked and, together with the ring, erased when unused. The cap
   // bounds that one-time erase and matches decode_flash.py.
-  bool begin(uint64_t newId) {
+  // largePartition (opt-in, default off) also accepts whole-sector sizes up to
+  // LargeMaxSize, e.g. the 1.4 MiB spiffs of the default 4 MB scheme. Such a
+  // partition is still proven unused as a whole before first use, but only
+  // the ring's own Size bytes are ever erased or written; the rest stays as
+  // it was.
+  bool begin(uint64_t newId, bool largePartition = false) {
     ready_ = false;
-    if (f_.size() < Size || f_.size() > MaxSize || f_.size() % Sector)
+    if (f_.size() < Size || f_.size() > maxSize(largePartition) ||
+        f_.size() % Sector)
       return fail(RingStatus::BadSize);
     uint8_t best[64]{};
     uint32_t seenGeneration[128]{};
@@ -66,21 +77,25 @@ public:
       }
     }
     if (!found) {
-      bool spiffs = false;
-      if (!unused(spiffs))
+      size_t marker = 0;
+      if (!unused(marker))
         return false;
       if (!newId)
         return fail(RingStatus::Unopened);
       // Holds no file, so erasing it cannot lose data; see unused(). Sector
-      // erases keep each flash-cache stall short for the other core.
-      for (size_t off = 0; spiffs && off < f_.size(); off += Sector)
+      // erases keep each flash-cache stall short for the other core. A
+      // partition up to MaxSize is erased whole. A larger one (accepted only
+      // with largePartition) is erased only over the ring; the SPIFFS magics
+      // left beyond it keep one block count, so unused() still accepts the
+      // partition when an interrupted first initialization is retried.
+      const size_t end = f_.size() > MaxSize ? Size : f_.size();
+      for (size_t off = 0; marker < end && off < end; off += Sector)
         if (!f_.erase(off, Sector))
           return fail(RingStatus::EraseError);
-      if (spiffs) {
-        bool remaining = false;
-        if (!unused(remaining)) // keeps unused()'s ReadError/ForeignData
+      if (marker < end) {
+        if (!unused(marker)) // keeps unused()'s ReadError/ForeignData
           return false;
-        if (remaining)
+        if (marker < end)
           return fail(RingStatus::EraseError);
       }
       ringId_ = newId;
@@ -296,9 +311,11 @@ private:
   // block then holds only its lookup-page magic, SPIFFS_MAGIC = 0x20140529 ^
   // 256-byte page ^ (blockCount - block) as uint16 at byte 252, plus the
   // erase count after it. Any other byte may belong to a file. Scans the whole
-  // partition, including any part beyond the ring.
-  bool unused(bool &spiffs) {
-    spiffs = false;
+  // partition, including any part beyond the ring. marker is the offset of the
+  // first sector holding a magic, or size() when there is none. Blank blocks
+  // are skipped, so a partly erased SPIFFS still yields one consistent count.
+  bool unused(size_t &marker) {
+    marker = f_.size();
     uint32_t blockCount = 0;
     for (size_t sector = 0; sector < f_.size() / Sector; ++sector) {
       uint8_t page[256], tail[4] = {255, 255, 255, 255};
@@ -325,7 +342,8 @@ private:
       if (!remaining || (blockCount && blockCount != count))
         return fail(RingStatus::ForeignData);
       blockCount = count;
-      spiffs = true;
+      if (marker == f_.size())
+        marker = sector * Sector;
     }
     return true;
   }

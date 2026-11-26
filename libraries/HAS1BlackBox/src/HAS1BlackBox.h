@@ -8,6 +8,9 @@ struct Config {
   bool enabled = true;
   const char *username = "";
   const char *password = "";
+  // Opt-in: accept a spiffs partition above 192 KiB (whole sectors, up to
+  // 2 MiB), e.g. the default 4 MB scheme. Only its first 128 KiB is used.
+  bool largePartition = false;
 };
 enum class FlushResult { Persisted, Failed, TimedOut, Unavailable };
 struct Diagnostics {
