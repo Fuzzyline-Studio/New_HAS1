@@ -16,8 +16,9 @@
 - **Omada·PHP 게이트웨이 입력은 켜지 않는다.** `gateway_udp`는 1호점 전용이다.
 - **감시 규칙은 발전기 감시를 그대로 쓴다.** `telemetry.incidents.generators`에 UT를 넣고
   `role`을 `tagmachine`으로 둔다. 판단은 MAC만으로 한다.
-- **무응답 기준은 45초**(`silence_seconds`)다. 태그머신은 태그 진행 중(로그인~개폐 연출)에
-  서버 폴링 타이머를 멈춰서, 정상 동작에서도 MAC이 붙은 요청이 20초 넘게 비는 구간이 있다.
+- **무응답 기준은 90초**(`silence_seconds`)다. 태그머신은 태그 진행 중(로그인~개폐 연출)에
+  서버 폴링 타이머를 멈춰서, 정상 동작에서도 MAC이 붙은 요청이 (해제 시간 + 약 10초) 동안 빈다.
+  대시보드에서 해제 시간을 60초까지 올릴 수 있으므로, 가장 긴 해제 시간 + 30초 이상으로 둔다.
 - **펌웨어**: `updated_tagmachine_main`의 `third_store` 브랜치, 블랙박스 포함 버전(v7 이상).
   장치 토큰은 `HAS3_tagmachine`이고 파티션 표는 그대로다(`Config::largePartition`).
   `coredump` 파티션이 없어 재부팅 카드에 패닉 백트레이스는 붙지 않는다.

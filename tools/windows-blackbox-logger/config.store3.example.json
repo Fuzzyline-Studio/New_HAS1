@@ -43,7 +43,7 @@
       "generators": {
         "enabled": false,
         "role": "tagmachine",
-        "silence_seconds": 45,
+        "silence_seconds": 90,
         "devices": {
           "UT": "2C:BC:BB:A7:C1:8C"
         }
