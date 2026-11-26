@@ -47,13 +47,13 @@
 5. UT에 블랙박스 펌웨어를 OTA로 올리고, 텔넷(`172.30.1.181:23`) 첫 줄에서
    `bb_ready=1 bb_status=1`을 확인한다. 대기 상태에서 `bb_uploaded`가 늘고 수집 DB에
    `HAS3_tagmachine` 기록이 쌓이는지 본다.
-6. Slack·Notion을 연결한다. 채널은 `#has3-device-alerts`(채널 ID는 생성 후 채움)이고, 봇을
+6. Slack·Notion을 연결한다. 채널은 `#has3-device-alerts`(`C0CM5TWDY9X`)이고, 봇을
    그 채널에 초대한다. Notion data source ID는 1호점과 같은 `HAS1 장치 이벤트` DB를 쓴다면
    STORE1-HANDOFF의 값이다. 이벤트는 `매장=store-3`, `역할=tagmachine`으로 기록된다.
 
    ```powershell
    .\configure-notifications.ps1 -EnableSlack -EnableNotion `
-     -SlackChannelId '<#has3-device-alerts 채널 ID>' `
+     -SlackChannelId 'C0CM5TWDY9X' `
      -NotionDataSourceId '<HAS1 장치 이벤트 data source ID>'
    Restart-Service HAS1BlackBoxCollector
    ```
