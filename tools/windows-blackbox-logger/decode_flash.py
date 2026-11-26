@@ -1,5 +1,8 @@
 """Read-only decoder for a 128 KiB HAS1BlackBox raw spiffs partition dump.
 
+With --large-partition (firmware built with Config::largePartition) a whole-sector
+dump up to 2 MiB is accepted; the ring is its first 128 KiB either way.
+
 This command does not connect to a device, erase a partition, import records, or ACK.
 """
 import argparse
@@ -24,11 +27,20 @@ def metadata(raw):
             "reserved_through_exclusive": reserved, "acked": acked}
 
 
-def decode(path, output):
+LARGE_MAX = 0x200000  # Ring::LargeMaxSize
+
+
+def decode(path, output, large_partition=False):
     path = Path(path)
     # 128 KiB spiffs, or the Arduino 2.x 192 KiB one whose first 128 KiB holds the ring.
-    if path.stat().st_size not in (131072, 196608):
-        raise ValueError("expected a 131072 or 196608 byte spiffs partition (not whole flash)")
+    size = path.stat().st_size
+    if large_partition:
+        # e.g. the default 4 MB scheme's 0x170000 spiffs on the store-3 tag machine.
+        if size < 131072 or size > LARGE_MAX or size % 4096:
+            raise ValueError("expected a whole-sector spiffs partition of 131072..2097152 bytes (not whole flash)")
+    elif size not in (131072, 196608):
+        raise ValueError("expected a 131072 or 196608 byte spiffs partition (not whole flash); "
+                         "use --large-partition for a larger one")
     data = path.read_bytes()[:131072]
     # Two 4 KiB sectors hold an append-only journal of 128 64-byte headers.
     # Older firmware with one header at each sector start is still readable.
@@ -91,8 +103,10 @@ def decode(path, output):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("partition", type=Path)
+    parser.add_argument("--large-partition", action="store_true",
+                        help="accept a whole-sector dump up to 2 MiB (firmware with Config::largePartition)")
     args = parser.parse_args()
-    decode(args.partition, sys.stdout)
+    decode(args.partition, sys.stdout, args.large_partition)
 
 
 if __name__ == "__main__":

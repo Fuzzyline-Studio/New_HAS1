@@ -1,0 +1,53 @@
+{
+  "host": "127.0.0.1",
+  "port": 1883,
+  "client_id": "has3-blackbox-collector",
+  "username": "collector",
+  "password_env": "HAS1_BLACKBOX_PASSWORD",
+  "database": "data/blackbox.sqlite3",
+  "tls_ca": null,
+  "telemetry": {
+    "site_id": "store-3",
+    "database": "data/telemetry.sqlite3",
+    "omada": {
+      "enabled": false
+    },
+    "server_jsonl": {
+      "enabled": false,
+      "directory": "C:/ProgramData/HAS1BlackBox/server-telemetry",
+      "source_id": "store-3-game-server",
+      "poll_seconds": 0.5
+    },
+    "min_free_bytes": 1073741824,
+    "device_import": {
+      "enabled": false
+    },
+    "clock_probe": {
+      "enabled": false
+    },
+    "gateway_udp": {
+      "enabled": false
+    },
+    "incidents": {
+      "enabled": false,
+      "database": "data/incidents.sqlite3",
+      "notifications": {
+        "enabled": false,
+        "slack": {
+          "enabled": false
+        },
+        "notion": {
+          "enabled": false
+        }
+      },
+      "generators": {
+        "enabled": false,
+        "role": "tagmachine",
+        "silence_seconds": 45,
+        "devices": {
+          "UT": "2C:BC:BB:A7:C1:8C"
+        }
+      }
+    }
+  }
+}

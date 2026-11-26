@@ -109,7 +109,7 @@ class CppContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
             executable = self.compile_fixture(base)
-            for device in ("iotglove", "HAS1_generator", "HAS1_altar"):
+            for device in ("iotglove", "HAS1_generator", "HAS1_altar", "HAS3_tagmachine"):
                 with self.subTest(device=device):
                     wire = subprocess.check_output([str(executable), device])
                     batch = parse_batch("has1/blackbox/v1/AABBCCDDEEFF/batch", wire)
