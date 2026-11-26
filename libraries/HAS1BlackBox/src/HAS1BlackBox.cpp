@@ -43,6 +43,7 @@ struct AckMessage {
   char data[80];
 };
 std::atomic<bool> started{false}, isReady{false}, paused{false}, allowed{false};
+bool largePartition = false; // Config::largePartition, set before the writer
 std::atomic<uint32_t> generation{0}, accepted{0}, persisted{0}, dropped{0},
     flashErrors{0}, uploadFailures{0}, uploaded{0}, firstFailed{0},
     completed{0}, eraseCalls{0}, maxEraseUs{0}, overwritten{0},
@@ -242,7 +243,7 @@ void writer(void *) {
   // Startup only: partition validation and discovery happen off the game task.
   partitionBytes = flash.p ? uint32_t(flash.p->size) : 0;
   bool ok = flash.p && flash.p->size >= Ring::Size &&
-            flash.p->size <= Ring::MaxSize;
+            flash.p->size <= Ring::maxSize(largePartition);
   if (flash.p && !ok)
     ringStatus = uint8_t(RingStatus::BadSize);
   if (ok) {
@@ -254,7 +255,8 @@ void writer(void *) {
       xSemaphoreGive(flashGuard);
       ok = false;
     } else {
-      ok = ring.begin((uint64_t(esp_random()) << 32) | esp_random());
+      ok = ring.begin((uint64_t(esp_random()) << 32) | esp_random(),
+                      largePartition);
       ringStatus = uint8_t(ring.status());
       xSemaphoreGive(flashGuard);
     }
@@ -277,7 +279,7 @@ void writer(void *) {
       if (ok && uint32_t(millis() - retryAt) >= 60000) {
         retryAt = millis();
         if (xSemaphoreTake(flashGuard, 0) == pdTRUE) {
-          isReady = ring.begin(0);
+          isReady = ring.begin(0, largePartition);
           ringStatus = uint8_t(ring.status());
           degraded = !isReady.load();
           xSemaphoreGive(flashGuard);
@@ -593,9 +595,7 @@ bool BlackBox::begin(const Config &c) {
     return false;
   if (started)
     return false;
-  if (!c.device || (std::strcmp(c.device, "iotglove") &&
-                    std::strcmp(c.device, "HAS1_generator") &&
-                    std::strcmp(c.device, "HAS1_altar")))
+  if (!knownDevice(c.device))
     return false;
   if (c.brokerUri && std::strlen(c.brokerUri) >= sizeof(broker))
     return false;
@@ -603,6 +603,7 @@ bool BlackBox::begin(const Config &c) {
       (c.password && std::strlen(c.password) >= sizeof(password)))
     return false;
   std::snprintf(password, sizeof(password), "%s", c.password ? c.password : "");
+  largePartition = c.largePartition;
   std::snprintf(device, sizeof(device), "%s", c.device);
   std::snprintf(firmware, sizeof(firmware), "%s",
                 c.firmware ? c.firmware : "unknown");

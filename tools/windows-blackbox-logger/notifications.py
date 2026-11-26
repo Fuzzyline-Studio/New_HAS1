@@ -353,7 +353,8 @@ def _reboot_reason(payload):
 def slack_message(payload):
     """Human-readable card. plain_text only, so payload values can never mention or link."""
     status = payload.get("status")
-    header = SLACK_HEADERS.get(status, "HAS1 장치 장애")
+    # Not "HAS1": the store is the 매장 field, and one collector serves one store.
+    header = SLACK_HEADERS.get(status, "장치 장애")
     device = _text(payload.get("device_id"), 60) or "알 수 없는 장치"
     site = _text(payload.get("site_id"), 60)
     try:

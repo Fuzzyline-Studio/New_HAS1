@@ -26,6 +26,7 @@ import sqlite3
 from telemetry import normalize_mac, parse_utc
 
 SILENCE_SECONDS = 20
+ROLE = "generator"
 GROUP_MIN = 3
 GROUP_WINDOW_SECONDS = 10
 # With 30+ devices polling every 1-2 s, no request at all for this long means the
@@ -40,8 +41,11 @@ RESET_LABELS = {**IN_GAME_REPORTED, 3: "sw", **ALWAYS_REPORTED}
 
 class GeneratorWatch:
     def __init__(self, generators, *, always=None, silence_seconds=SILENCE_SECONDS, group_min=GROUP_MIN,
-                 group_window_seconds=GROUP_WINDOW_SECONDS, pause_seconds=SERVER_PAUSE_SECONDS):
+                 group_window_seconds=GROUP_WINDOW_SECONDS, pause_seconds=SERVER_PAUSE_SECONDS, role=ROLE):
         always = always or {}
+        # What the watched devices are, as cards show it. Decisions work by MAC alone, so any
+        # device that polls the server can be watched (store 3 lists its tag machine).
+        self.role = role
         everything = list(generators.items()) + list(always.items())
         self.names = {normalize_mac(mac): name for name, mac in everything}
         if len(self.names) != len(everything) or len(set(self.names.values())) != len(self.names):

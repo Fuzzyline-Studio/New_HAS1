@@ -10,14 +10,15 @@ from datetime import datetime, timedelta, timezone
 import json
 import logging
 from pathlib import Path
+import re
 import sqlite3
 import threading
 import time
 from types import SimpleNamespace
 import uuid
 
-from generator_watch import (ALWAYS_REPORTED, GROUP_MIN, RESET_LABELS, SCAN_FAULT, SILENCE_SECONDS, GeneratorWatch, boot_reason,
-                             scan_fault_restart)
+from generator_watch import (ALWAYS_REPORTED, GROUP_MIN, RESET_LABELS, ROLE, SCAN_FAULT, SILENCE_SECONDS, GeneratorWatch,
+                             boot_reason, scan_fault_restart)
 from incident_evidence import GIVE_UP_SECONDS, summarize, wait_seconds
 from telemetry import Event, canonical_json, normalize_mac, parse_utc, utc_now
 
@@ -41,7 +42,7 @@ KST = timezone(timedelta(hours=9))
 
 
 def validate_generators(value):
-    if not isinstance(value, dict) or set(value) - {"enabled", "devices", "always", "silence_seconds", "group_min"}:
+    if not isinstance(value, dict) or set(value) - {"enabled", "devices", "always", "silence_seconds", "group_min", "role"}:
         raise ValueError("incidents generators contains unknown fields")
     enabled = value.get("enabled", False)
     if type(enabled) is not bool:
@@ -62,9 +63,16 @@ def validate_generators(value):
         raise ValueError("incidents generators silence_seconds must be 10..300")
     if type(group) is not int or not 2 <= group <= 16:
         raise ValueError("incidents generators group_min must be 2..16")
+    # Shown on cards; store 3 watches its tag machine here with "tagmachine".
+    role = value.get("role", ROLE)
+    if not isinstance(role, str) or not re.fullmatch(r"[a-z][a-z0-9_]{0,31}", role):
+        raise ValueError("incidents generators role must be a short lowercase name")
     GeneratorWatch(devices, always=always)  # unique names and MACs across both
-    return {"enabled": enabled, "devices": dict(devices), "always": dict(always),
-            "silence_seconds": silence, "group_min": group}
+    result = {"enabled": enabled, "devices": dict(devices), "always": dict(always),
+              "silence_seconds": silence, "group_min": group}
+    if "role" in value:
+        result["role"] = role
+    return result
 
 
 def validate_config(value, base_path, telemetry_database, device_database, server):
@@ -227,13 +235,15 @@ class IncidentStore:
         role = _text(details.get("role")) or "unknown"
         reason = row["reason"] or "unknown"
         kind = _text(details.get("kind"))
+        # Watched devices are generators at store 1; store 3 watches a tag machine the same way.
+        watched = role.capitalize()
         if kind == "reboot":
-            summary = f"Generator {row['device_id']} rebooted: reset reason {details.get('reset_reason')} ({details.get('reset_label')}), firmware {details.get('firmware')}. Cause not determined."
+            summary = f"{watched} {row['device_id']} rebooted: reset reason {details.get('reset_reason')} ({details.get('reset_label')}), firmware {details.get('firmware')}. Cause not determined."
         elif kind in ("silence", "group"):
             reboots = details.get("reboots") or []
             rebooted = "; rebooted: " + ", ".join(f"{item.get('name')} ({item.get('label')})" for item in reboots) if reboots else ""
             when = "while always watched" if details.get("watch") == "always" else "during the game"
-            summary = f"Generator {row['device_id']} / {status} / collector rule: no server request for {details.get('gap_ms', 'unknown')} ms {when}; last_seen={details.get('last_seen_utc', 'unknown')}{rebooted}. Cause not determined."
+            summary = f"{watched} {row['device_id']} / {status} / collector rule: no server request for {details.get('gap_ms', 'unknown')} ms {when}; last_seen={details.get('last_seen_utc', 'unknown')}{rebooted}. Cause not determined."
         else:
             summary = f"Device {row['device_id']} / role {role} / {status} / server reason {reason}; last_seen={details.get('last_seen_utc', 'unknown')}; gap_ms={details.get('gap_ms', 'unknown')}. Cause not determined."
         payload = {"incident_id": row["incident_id"], "site_id": row["site_id"],
@@ -379,14 +389,15 @@ class IncidentStore:
             last_seen = action["last_seen"].isoformat(timespec="microseconds") if action.get("last_seen") else None
             # An always-watched device is in no game: its outages share the day's card, like reboots outside games.
             session = "게임외-" + action["at"].astimezone(KST).strftime("%Y%m%d") if action["always"] else self.watch.session
-            details = {"role": "generator", "kind": "silence" if single else "group", "members": names,
+            details = {"role": self.watch.role, "kind": "silence" if single else "group", "members": names,
                        "member_macs": macs, "since_utc": since, "last_seen_utc": last_seen, "gap_ms": action["gap_ms"],
                        "boot_id": self.watch.boot, "game_session_id": session, "reason": "generator_silent"}
             if action["always"]:
                 details["watch"] = "always"
             inserted = self.db.execute("INSERT OR IGNORE INTO incident_state VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                 (incident, site_id, self.watch_source, self.watch.boot or "unknown", session,
-                 names[0] if single else "발전기 " + "·".join(names), macs[0] if single else None,
+                 names[0] if single else ("발전기 " if self.watch.role == ROLE else "장치 ") + "·".join(names),
+                 macs[0] if single else None,
                  "open", "generator_silent", opened, opened, canonical_json(details))).rowcount
             if inserted:
                 self._queue(self.db.execute("SELECT * FROM incident_state WHERE incident_id=?", (incident,)).fetchone(), channels, 1, "offline")
@@ -482,7 +493,7 @@ class IncidentStore:
         if self.db.execute("SELECT 1 FROM incident_state WHERE reason='generator_reboot' AND site_id=? AND mac=? AND session_id=? AND opened_utc>=?",
                            (event.site_id, event.mac, session, quiet)).fetchone():
             return
-        details = {"role": "generator", "kind": "reboot", "reset_reason": found[0], "reset_label": label,
+        details = {"role": self.watch.role, "kind": "reboot", "reset_reason": found[0], "reset_label": label,
                    "firmware": found[1], "device_boot": device_boot, "game_session_id": session,
                    # The blackbox table is anchored on this record, not on the upload's arrival time.
                    "device_ring": event.fields.get("ring"), "device_seq": event.fields.get("seq")}
@@ -785,7 +796,8 @@ class IncidentRuntime:
     def _watch_generators(self, state):
         if self.generators.get("enabled"):
             state.attach_generators(GeneratorWatch(self.generators["devices"], always=self.generators.get("always"),
-                silence_seconds=self.generators["silence_seconds"], group_min=self.generators["group_min"]), self.source_id)
+                silence_seconds=self.generators["silence_seconds"], group_min=self.generators["group_min"],
+                role=self.generators.get("role", ROLE)), self.source_id)
 
     def _routed(self, event, state):
         """Events the incident store processes; the cursor skips the rest. Device records
